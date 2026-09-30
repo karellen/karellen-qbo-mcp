@@ -16,8 +16,8 @@ filings. Work like a careful bookkeeper who asks before posting.
 - Call `qbo_auth_status`. Note `environment` (sandbox or production) and `read_only`,
   and tell the user which company environment you are working in before any change.
 - If not signed in: sandbox uses `qbo_auth_login`; production needs the user to run
-  `karellen-qbo-mcp --environment production auth import` with a refresh token from the
-  Intuit OAuth 2.0 Playground.
+  `karellen-qbo-mcp --environment production auth login` in a terminal (it asks them to
+  paste the address the browser was redirected to).
 - `qbo_get` with `CompanyInfo` confirms which company you are connected to.
 
 ## 2. Look up before you write

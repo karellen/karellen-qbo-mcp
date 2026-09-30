@@ -151,6 +151,50 @@ class CliTests(unittest.TestCase):
         self.assertIn("https://appcenter.intuit.com", err)
         self.assertEqual(self.store().load().realm_id, "555")
 
+    def paste_login(self, pasted):
+        redirect = "https://karellen.example/qbo-callback"
+        self.cli("--environment", "production", "auth", "configure", "--client-id", "prod-id", "--redirect-uri", redirect,
+                 stdin="prod-secret\n")
+        exchanges = []
+
+        async def authorization_url(oauth, redirect_uri, state):
+            return "https://appcenter.intuit.com/connect/oauth2?redirect_uri=%s&state=%s" % (redirect_uri, state)
+
+        async def exchange_code(oauth, code, redirect_uri, realm_id):
+            exchanges.append((code, redirect_uri, realm_id))
+            return make_tokens(realm_id=realm_id)
+
+        with patch("karellen_qbo_mcp.oauth.OAuthClient.authorization_url", authorization_url), \
+                patch("karellen_qbo_mcp.oauth.OAuthClient.exchange_code", exchange_code), \
+                patch("karellen_qbo_mcp.login.secrets.token_urlsafe", return_value="st8"), \
+                watch_token_lock() as events:
+            result = self.cli("--environment", "production", "auth", "login", "--no-browser",
+                              stdin=pasted.format(redirect=redirect))
+        return result, exchanges, events
+
+    def test_login_with_https_redirect_reads_pasted_address(self):
+        (code, out, err), exchanges, events = self.paste_login("{redirect}?code=C0DE&state=st8&realmId=4620816365\n")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(exchanges, [("C0DE", "https://karellen.example/qbo-callback", "4620816365")])
+        self.assertEqual(events, [("save", True)])
+        self.assertIn("https://appcenter.intuit.com/connect/oauth2?", err)
+        self.assertIn("Paste the full address", err)
+        self.assertIn("4620816365", out)
+        self.assertEqual(self.store("production").load().realm_id, "4620816365")
+
+    def test_login_with_https_redirect_rejects_foreign_state(self):
+        (code, _, err), exchanges, events = self.paste_login("{redirect}?code=C0DE&state=other&realmId=4620816365\n")
+        self.assertEqual(code, 1)
+        self.assertIn("state does not match", err)
+        self.assertEqual((exchanges, events), ([], []))
+        self.assertIsNone(self.store("production").load())
+
+    def test_login_with_https_redirect_nothing_pasted(self):
+        (code, _, err), exchanges, _ = self.paste_login("")
+        self.assertEqual(code, 1)
+        self.assertIn("not an address under the redirect URI", err)
+        self.assertEqual(exchanges, [])
+
     def test_login_without_redirect(self):
         self.configure("production")
         code, _, err = self.cli("--environment", "production", "auth", "login")

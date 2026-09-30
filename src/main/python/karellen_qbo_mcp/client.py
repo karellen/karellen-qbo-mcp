@@ -182,8 +182,8 @@ class QboClient:
                 return fresh
 
     def _not_signed_in(self) -> str:
-        return ("Not signed in to QuickBooks (%s environment). Use the qbo_auth_login tool, or run "
-                "`karellen-qbo-mcp --environment %s auth login` (sandbox) or `... auth import` (production)."
+        return ("Not signed in to QuickBooks (%s environment). Use the qbo_auth_login tool (sandbox), or run "
+                "`karellen-qbo-mcp --environment %s auth login` in a terminal."
                 % (self.settings.environment, self.settings.environment))
 
     # --- Transport -----------------------------------------------------------

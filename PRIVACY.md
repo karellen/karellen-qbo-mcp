@@ -2,7 +2,7 @@
 
 **karellen-qbo-mcp** — MCP Server for QuickBooks Online
 
-*Last updated: 2026-09-28*
+*Last updated: 2026-09-30*
 
 ## Summary
 
@@ -29,6 +29,11 @@ The server connects only to:
   `sandbox-quickbooks.api.intuit.com` for sandbox companies)
 - The temporary download location QuickBooks issues when an attachment is downloaded
 - Your own machine (`localhost`), for the one-time browser sign-in callback
+
+When you sign in with a redirect URI other than `localhost` (as production keys require),
+your browser, not the server, visits that address after you approve access. The address
+carries a one-time authorization code that is useless without your app's client secret,
+and the site hosting it may log it.
 
 ## Data Stored Locally
 
