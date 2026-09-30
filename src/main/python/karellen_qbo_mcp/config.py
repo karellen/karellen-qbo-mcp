@@ -33,6 +33,12 @@ API_BASE_URLS = {
     PRODUCTION: "https://quickbooks.api.intuit.com",
 }
 
+# Intuit's OpenID Connect discovery documents, the authoritative source of the OAuth 2.0 endpoints.
+DISCOVERY_URLS = {
+    SANDBOX: "https://developer.api.intuit.com/.well-known/openid_sandbox_configuration",
+    PRODUCTION: "https://developer.api.intuit.com/.well-known/openid_configuration",
+}
+
 # Intuit discontinued minor versions 1-74 on 2025-08-01; 75 is the minimum and the default.
 DEFAULT_MINOR_VERSION = "75"
 
@@ -71,6 +77,10 @@ class Settings:
     @property
     def api_base_url(self) -> str:
         return API_BASE_URLS[self.environment]
+
+    @property
+    def discovery_url(self) -> str:
+        return DISCOVERY_URLS[self.environment]
 
     @property
     def client_path(self) -> Path:

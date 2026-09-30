@@ -22,9 +22,11 @@ import httpx2
 
 from karellen_qbo_mcp.tokens import Tokens, TokenStoreError
 
-AUTHORIZATION_ENDPOINT = "https://appcenter.intuit.com/connect/oauth2"
-TOKEN_ENDPOINT = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer"
-REVOKE_ENDPOINT = "https://developer.api.intuit.com/v2/oauth2/tokens/revoke"
+# Discovery document keys of the endpoints this client uses.
+AUTHORIZATION_ENDPOINT = "authorization_endpoint"
+TOKEN_ENDPOINT = "token_endpoint"
+REVOCATION_ENDPOINT = "revocation_endpoint"
+ENDPOINTS = (AUTHORIZATION_ENDPOINT, TOKEN_ENDPOINT, REVOCATION_ENDPOINT)
 
 ACCOUNTING_SCOPE = "com.intuit.quickbooks.accounting"
 
@@ -46,14 +48,17 @@ class OAuthError(Exception):
 
 
 class OAuthClient:
-    def __init__(self, client_id: str, client_secret: str, http_client: httpx2.AsyncClient | None = None, clock=time.time):
+    def __init__(self, client_id: str, client_secret: str, discovery_url: str, http_client: httpx2.AsyncClient | None = None,
+                 clock=time.time):
         self.client_id = client_id
+        self.discovery_url = discovery_url
         self._auth = httpx2.BasicAuth(client_id, client_secret)
         self._http = http_client
         self._clock = clock
+        self._endpoints = None
 
-    def authorization_url(self, redirect_uri: str, state: str) -> str:
-        return AUTHORIZATION_ENDPOINT + "?" + urlencode({
+    async def authorization_url(self, redirect_uri: str, state: str) -> str:
+        return await self._endpoint(AUTHORIZATION_ENDPOINT) + "?" + urlencode({
             "client_id": self.client_id,
             "response_type": "code",
             "scope": ACCOUNTING_SCOPE,
@@ -75,13 +80,14 @@ class OAuthClient:
         }, realm_id)
 
     async def revoke(self, token: str):
-        response = await self._post(REVOKE_ENDPOINT, json={"token": token})
+        response = await self._post(await self._endpoint(REVOCATION_ENDPOINT), json={"token": token})
         if response.status_code != 200:
             raise self._error(response, "Token revocation failed")
 
     async def _token_request(self, form: dict, realm_id: str) -> Tokens:
+        url = await self._endpoint(TOKEN_ENDPOINT)
         now = self._clock()
-        response = await self._post(TOKEN_ENDPOINT, data=form, headers={HARD_EXPIRY_HEADER: "true"})
+        response = await self._post(url, data=form, headers={HARD_EXPIRY_HEADER: "true"})
         if response.status_code != 200:
             raise self._error(response, "Token request failed")
         try:
@@ -93,14 +99,38 @@ class OAuthClient:
         except TokenStoreError as e:
             raise OAuthError(str(e), status_code=response.status_code) from e
 
+    async def _endpoint(self, name: str) -> str:
+        """An endpoint from Intuit's discovery document, fetched on first use (a failed fetch is retried next time)."""
+        if self._endpoints is None:
+            response = await self._request("GET", self.discovery_url)
+            if response.status_code != 200:
+                raise self._error(response, "Fetching the Intuit discovery document %s failed" % self.discovery_url)
+            try:
+                document = response.json()
+            except ValueError as e:
+                raise OAuthError("Intuit discovery document %s is not JSON" % self.discovery_url,
+                                 status_code=response.status_code) from e
+            endpoints = {}
+            for key in ENDPOINTS:
+                url = document.get(key) if isinstance(document, dict) else None
+                # The client secret and tokens are sent to these URLs.
+                if not isinstance(url, str) or not url.startswith("https://"):
+                    raise OAuthError("Intuit discovery document %s has no HTTPS %s: %r" % (self.discovery_url, key, url))
+                endpoints[key] = url
+            self._endpoints = endpoints
+        return self._endpoints[name]
+
     async def _post(self, url: str, **kwargs) -> httpx2.Response:
+        return await self._request("POST", url, auth=self._auth, **kwargs)
+
+    async def _request(self, method: str, url: str, **kwargs) -> httpx2.Response:
         headers = {"Accept": "application/json"}
         headers.update(kwargs.pop("headers", {}))
         try:
             if self._http is not None:
-                return await self._http.post(url, auth=self._auth, headers=headers, **kwargs)
+                return await self._http.request(method, url, headers=headers, **kwargs)
             async with httpx2.AsyncClient(timeout=HTTP_TIMEOUT) as http:
-                return await http.post(url, auth=self._auth, headers=headers, **kwargs)
+                return await http.request(method, url, headers=headers, **kwargs)
         except httpx2.HTTPError as e:
             raise OAuthError("Cannot reach Intuit OAuth endpoint %s: %s" % (url, e)) from e
 
