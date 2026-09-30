@@ -70,7 +70,7 @@ class Runtime:
     def oauth(self) -> OAuthClient:
         if self._oauth is None:
             client_id, client_secret = self.settings.require_client_credentials()
-            self._oauth = OAuthClient(client_id, client_secret)
+            self._oauth = OAuthClient(client_id, client_secret, self.settings.discovery_url)
         return self._oauth
 
     @property

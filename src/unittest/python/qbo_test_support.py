@@ -32,6 +32,14 @@ NOW = 1_800_000_000.0
 REALM = "9341455555555555"
 BASE = "https://sandbox-quickbooks.api.intuit.com/v3/company/%s/" % REALM
 
+DISCOVERY_URL = "https://developer.api.intuit.com/.well-known/openid_sandbox_configuration"
+# Not Intuit's real endpoints, so tests show the client uses whatever the discovery document names.
+DISCOVERY = {"issuer": "https://oauth.example.test/op/v1",
+             "authorization_endpoint": "https://appcenter.example.test/connect/oauth2",
+             "token_endpoint": "https://oauth.example.test/oauth2/v1/tokens/bearer",
+             "revocation_endpoint": "https://developer.example.test/v2/oauth2/tokens/revoke",
+             "response_types_supported": ["code"]}
+
 
 def make_settings(state_dir, environment="sandbox", read_only=False, client_id="cid", client_secret="csecret",
                   redirect_uri="http://localhost:8765/callback") -> Settings:

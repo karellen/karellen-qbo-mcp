@@ -42,6 +42,7 @@ class LoadSettingsTests(unittest.TestCase):
         s = load_settings(self.environ)
         self.assertEqual(s.environment, "sandbox")
         self.assertEqual(s.api_base_url, "https://sandbox-quickbooks.api.intuit.com")
+        self.assertEqual(s.discovery_url, "https://developer.api.intuit.com/.well-known/openid_sandbox_configuration")
         self.assertEqual(s.redirect_uri, DEFAULT_SANDBOX_REDIRECT_URI)
         self.assertEqual(s.state_dir, self.base / "sandbox")
         self.assertEqual(s.minor_version, "75")
@@ -52,6 +53,7 @@ class LoadSettingsTests(unittest.TestCase):
         s = load_settings(dict(self.environ, QBO_MCP_ENVIRONMENT="Production"))
         self.assertEqual(s.environment, "production")
         self.assertEqual(s.api_base_url, "https://quickbooks.api.intuit.com")
+        self.assertEqual(s.discovery_url, "https://developer.api.intuit.com/.well-known/openid_configuration")
         self.assertIsNone(s.redirect_uri)
 
     def test_explicit_environment_overrides_variable(self):

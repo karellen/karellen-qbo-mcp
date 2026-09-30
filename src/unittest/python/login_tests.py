@@ -21,10 +21,12 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit, parse_qs
 
+import httpx2
+
 from karellen_qbo_mcp.login import (LoginError, browser_login, local_callback_address, parse_callback_target,
                                     open_browser_detached)
 from karellen_qbo_mcp.oauth import OAuthClient
-from qbo_test_support import make_tokens
+from qbo_test_support import DISCOVERY, DISCOVERY_URL, Recorder, json_response, make_tokens
 
 
 def free_port():
@@ -35,7 +37,8 @@ def free_port():
 
 class FakeOAuthClient(OAuthClient):
     def __init__(self):
-        super().__init__("the-id", "the-secret")
+        super().__init__("the-id", "the-secret", DISCOVERY_URL,
+                         http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(Recorder(json_response(200, DISCOVERY)))))
         self.exchanges = []
 
     async def exchange_code(self, code, redirect_uri, realm_id):
@@ -126,6 +129,7 @@ class BrowserLoginTests(unittest.TestCase):
         self.assertEqual(self.oauth.exchanges, [("C0DE", self.redirect, "123145")])
         self.assertIn("sign-in received", self.pages[0])
         self.assertIn("redirect_uri=http%3A%2F%2F127.0.0.1", self.opened)
+        self.assertTrue(self.opened.startswith(DISCOVERY["authorization_endpoint"] + "?"), self.opened)
 
     def test_unrelated_path_ignored(self):
         tokens = self.login(lambda state: ["/favicon.ico", "/callback?code=C&state=%s&realmId=9" % state])

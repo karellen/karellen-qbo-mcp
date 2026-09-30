@@ -138,7 +138,7 @@ async def browser_login(oauth: OAuthClient, redirect_uri: str, open_browser=webb
     """Run the authorization-code flow: open the browser, await the callback, exchange the code."""
     host, port, path = local_callback_address(redirect_uri)
     state = secrets.token_urlsafe(32)
-    url = oauth.authorization_url(redirect_uri, state)
+    url = await oauth.authorization_url(redirect_uri, state)
     received = asyncio.get_running_loop().create_future()
     server = await _serve_callback(host, port, path, received)
     try:

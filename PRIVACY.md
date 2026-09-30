@@ -22,7 +22,8 @@ This software does **not**:
 
 The server connects only to:
 
-- Intuit's OAuth 2.0 endpoints (`appcenter.intuit.com`, `oauth.platform.intuit.com`,
+- Intuit's OAuth 2.0 discovery document (`developer.api.intuit.com`) and the endpoints it
+  names (currently `appcenter.intuit.com`, `oauth.platform.intuit.com` and
   `developer.api.intuit.com`) to authorize access and refresh or revoke tokens
 - The QuickBooks Online Accounting API (`quickbooks.api.intuit.com`, or
   `sandbox-quickbooks.api.intuit.com` for sandbox companies)

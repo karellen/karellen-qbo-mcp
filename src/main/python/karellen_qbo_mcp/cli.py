@@ -47,7 +47,7 @@ def _store(settings) -> TokenStore:
 
 def _oauth(settings) -> OAuthClient:
     client_id, client_secret = settings.require_client_credentials()
-    return OAuthClient(client_id, client_secret)
+    return OAuthClient(client_id, client_secret, settings.discovery_url)
 
 
 def cmd_configure(args):

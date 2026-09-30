@@ -490,6 +490,7 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(rt.settings.environment, "production")
                 self.assertEqual(rt.client.settings.api_base_url, "https://quickbooks.api.intuit.com")
                 self.assertEqual(rt.oauth.client_id, "i")
+                self.assertEqual(rt.oauth.discovery_url, "https://developer.api.intuit.com/.well-known/openid_configuration")
 
     def test_aclose_closes_the_http_client(self):
         with tempfile.TemporaryDirectory() as tmp:
