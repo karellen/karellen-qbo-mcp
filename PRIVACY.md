@@ -39,6 +39,8 @@ subdirectory per environment), readable only by your user account:
 - `tokens.json` — the OAuth access and refresh tokens and your company (realm) ID
 - `audit.jsonl` — a log of every change the server sends to QuickBooks, including the
   submitted data and the identifying fields of the result
+- `errors.jsonl` — a log of every error the server reports, with the request that caused
+  it (for example a query or the data of a rejected change) and QuickBooks' error details
 
 Files you ask it to download (PDFs, attachments) are written to the paths you choose.
 Nothing else is stored.

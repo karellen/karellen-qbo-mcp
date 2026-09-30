@@ -20,7 +20,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from karellen_qbo_mcp.audit import AuditLog
+from karellen_qbo_mcp.audit import AuditLog, ErrorLog
 
 
 class AuditLogTests(unittest.TestCase):
@@ -54,6 +54,35 @@ class AuditLogTests(unittest.TestCase):
         self.path.mkdir()  # a directory where the file should be
         with self.assertLogs("karellen_qbo_mcp.audit", level="ERROR"):
             self.log.record("create", "Customer", {}, result={})
+
+
+class ErrorLogTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "production" / "errors.jsonl"
+        self.log = ErrorLog(self.path, "production")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_records_errors_with_details(self):
+        self.log.record("qbo_query", {"query": "SELECT * FORM Customer"}, "qbo: Invalid query", realm_id="1",
+                        details={"type": "QboApiError", "intuit_tid": "tid-1"})
+        self.log.record("qbo_get", {"entity": "Nope", "id": "2"}, "invalid: unknown entity")
+        first, second = [json.loads(line) for line in self.path.read_text().splitlines()]
+        self.assertEqual({k: v for k, v in first.items() if k != "timestamp"},
+                         {"environment": "production", "realm_id": "1", "tool": "qbo_query",
+                          "arguments": {"query": "SELECT * FORM Customer"}, "error": "qbo: Invalid query",
+                          "type": "QboApiError", "intuit_tid": "tid-1"})
+        self.assertEqual((second["tool"], second["realm_id"], second["error"]), ("qbo_get", None, "invalid: unknown entity"))
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+
+    def test_write_failure_is_logged_not_raised(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.mkdir()  # a directory where the file should be
+        with self.assertLogs("karellen_qbo_mcp.audit", level="ERROR") as logs:
+            self.log.record("qbo_get", {}, "qbo: failed")
+        self.assertIn("Cannot write error log", logs.output[0])
 
 
 if __name__ == "__main__":

@@ -56,6 +56,7 @@ ENV_MINOR_VERSION = "QBO_MCP_MINOR_VERSION"
 CLIENT_FILE = "client.json"
 TOKENS_FILE = "tokens.json"
 AUDIT_FILE = "audit.jsonl"
+ERRORS_FILE = "errors.jsonl"
 
 _TRUE_VALUES = ("1", "true", "yes", "on")
 
@@ -93,6 +94,10 @@ class Settings:
     @property
     def audit_path(self) -> Path:
         return self.state_dir / AUDIT_FILE
+
+    @property
+    def errors_path(self) -> Path:
+        return self.state_dir / ERRORS_FILE
 
     def require_client_credentials(self) -> tuple[str, str]:
         if not self.client_id or not self.client_secret:
