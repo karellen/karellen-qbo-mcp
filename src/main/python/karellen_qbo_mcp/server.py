@@ -16,6 +16,8 @@
 """MCP server exposing the QuickBooks Online Accounting API as tools."""
 
 import functools
+import inspect
+import logging
 import mimetypes
 import os
 import time
@@ -28,8 +30,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
-from karellen_qbo_mcp.audit import AuditLog
-from karellen_qbo_mcp.client import QboClient, QboError, QboAuthError, BATCH_LIMIT
+from karellen_qbo_mcp.audit import AuditLog, ErrorLog
+from karellen_qbo_mcp.client import QboClient, QboError, QboAuthError, QboApiError, BATCH_LIMIT
 from karellen_qbo_mcp.config import Settings, ConfigError, load_settings
 from karellen_qbo_mcp.entities import EntityError, get_entity, require_capability, describe_entities
 from karellen_qbo_mcp.files import write_private_file
@@ -37,6 +39,8 @@ from karellen_qbo_mcp.login import LoginError, browser_login, open_browser_detac
 from karellen_qbo_mcp.oauth import OAuthClient, OAuthError
 from karellen_qbo_mcp.reports import KNOWN_REPORTS, ReportError, validate_report_name, flatten_report
 from karellen_qbo_mcp.tokens import TokenStore, TokenStoreError, auth_status, iso_time
+
+logger = logging.getLogger(__name__)
 
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 MAX_QUERY_ROWS = 100000
@@ -63,6 +67,7 @@ class Runtime:
         self.settings = settings
         self.store = TokenStore(settings.tokens_path)
         self.audit = AuditLog(settings.audit_path, settings.environment)
+        self.errors = ErrorLog(settings.errors_path, settings.environment)
         self._oauth = None
         self._client = None
 
@@ -96,25 +101,54 @@ def _get_runtime() -> Runtime:
 
 
 def _tag_errors(fn):
+    """Report every failure as a ToolError prefixed with its category, and record it in the error log."""
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
         try:
             return await fn(*args, **kwargs)
-        except ToolError:
-            raise
-        except (QboAuthError, LoginError, OAuthError) as e:
-            raise ToolError("auth: %s" % e) from e
-        except QboError as e:
-            raise ToolError("qbo: %s" % e) from e
-        except (EntityError, ReportError) as e:
-            raise ToolError("invalid: %s" % e) from e
-        except (ConfigError, TokenStoreError) as e:
-            raise ToolError("config: %s" % e) from e
         except Exception as e:
-            tb = traceback.extract_tb(e.__traceback__)
-            tb_lines = ["%s:%d in %s" % (f.filename, f.lineno, f.name) for f in tb[-3:]]
-            raise ToolError("internal: %s: %s\n  %s" % (type(e).__name__, e, "\n  ".join(tb_lines))) from e
+            error = _tool_error(e)
+            _log_error(fn, args, kwargs, e, error)
+            if error is e:
+                raise
+            raise error from e
     return wrapper
+
+
+def _tool_error(e: Exception) -> ToolError:
+    if isinstance(e, ToolError):
+        return e
+    if isinstance(e, (QboAuthError, LoginError, OAuthError)):
+        return ToolError("auth: %s" % e)
+    if isinstance(e, QboError):
+        return ToolError("qbo: %s" % e)
+    if isinstance(e, (EntityError, ReportError)):
+        return ToolError("invalid: %s" % e)
+    if isinstance(e, (ConfigError, TokenStoreError)):
+        return ToolError("config: %s" % e)
+    tb = traceback.extract_tb(e.__traceback__)
+    tb_lines = ["%s:%d in %s" % (f.filename, f.lineno, f.name) for f in tb[-3:]]
+    return ToolError("internal: %s: %s\n  %s" % (type(e).__name__, e, "\n  ".join(tb_lines)))
+
+
+def _log_error(fn, args, kwargs, cause: Exception, error: ToolError):
+    rt = _runtime
+    if rt is None:  # the settings could not be loaded, so there is no state directory to log into
+        return
+    try:
+        arguments = inspect.signature(fn).bind_partial(*args, **kwargs).arguments
+    except TypeError:  # the tool was called with arguments it does not take
+        arguments = {"args": args, "kwargs": kwargs}
+    details = {"type": type(cause).__name__}
+    if isinstance(cause, QboApiError):
+        details.update(status_code=cause.status_code, fault_type=cause.fault_type, errors=cause.errors,
+                       intuit_tid=cause.intuit_tid)
+    try:
+        rt.errors.record(fn.__name__, arguments, str(error), realm_id=rt._client.realm_id if rt._client else None,
+                         details=details)
+    except Exception:
+        # The client must get the tool's error, not one from logging it.
+        logger.exception("Cannot record the %s error in the error log", fn.__name__)
 
 
 def _require_writable(rt: Runtime):

@@ -36,7 +36,8 @@ your machine, and the only services it talks to are Intuit's.
   attachments and invoice/estimate/sales receipt PDFs
 - **Supervision**: read and write tools are separate (and annotated as such), so Claude
   Code can allow reads and ask before every write; `dry_run` previews with field-level
-  diffs; a read-only mode; a local audit log of every write
+  diffs; a read-only mode; a local audit log of every write and an error log of every
+  failure
 - **Safe retries**: every write carries a QuickBooks `requestid`, so a retried request is
   de-duplicated by QuickBooks instead of being posted twice
 - **Token care**: access tokens refresh automatically; the rotating refresh token is
@@ -139,12 +140,12 @@ Playground steps.
 |---|---|---|
 | `QBO_MCP_ENVIRONMENT` | `sandbox` or `production` | `sandbox` |
 | `QBO_MCP_READ_ONLY` | `1`/`true`/`yes`/`on` refuses every write | off |
-| `QBO_MCP_CONFIG_DIR` | Where credentials, tokens and the audit log live | `~/.config/karellen-qbo-mcp` |
+| `QBO_MCP_CONFIG_DIR` | Where credentials, tokens and the logs live | `~/.config/karellen-qbo-mcp` |
 | `QBO_MCP_CLIENT_ID`, `QBO_MCP_CLIENT_SECRET` | App credentials, overriding `auth configure` | |
 | `QBO_MCP_REDIRECT_URI` | Redirect URI for browser sign-in | `http://localhost:8765/callback` (sandbox) |
 | `QBO_MCP_MINOR_VERSION` | Accounting API minor version | `75` |
 
-Each environment keeps its own `client.json`, `tokens.json` and `audit.jsonl` under
+Each environment keeps its own `client.json`, `tokens.json`, `audit.jsonl` and `errors.jsonl` under
 `<config dir>/<environment>/`, all readable only by you. The command line option
 `--environment` overrides `QBO_MCP_ENVIRONMENT`.
 
@@ -209,6 +210,10 @@ Every write tool except `qbo_send` and `qbo_upload_attachment` accepts `dry_run=
   `<config dir>/<environment>/audit.jsonl` with its request, `requestid` and result
   (for batches, each operation's record or fault). A write cancelled while waiting for
   QuickBooks is logged too, since QuickBooks may have applied it.
+- **Error log.** Every error a tool reports, from reads and writes alike, is appended to
+  `<config dir>/<environment>/errors.jsonl` with the tool, its arguments and the error. For
+  QuickBooks API errors it also records the HTTP status, fault type, error codes and the
+  `intuit_tid` that Intuit support asks for.
 
 ## MCP Protocol Versions
 

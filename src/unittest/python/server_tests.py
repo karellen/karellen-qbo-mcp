@@ -89,6 +89,82 @@ class ServerTestBase(unittest.TestCase):
         path = self.settings.audit_path
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
+    def errors(self):
+        path = self.settings.errors_path
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+class ErrorLogTests(ServerTestBase):
+    def test_read_errors_are_logged_with_arguments_and_intuit_details(self):
+        fault = {"Fault": {"Error": [{"Message": "Invalid query", "Detail": "QueryParserError: Encountered \"FORM\"",
+                                      "code": "4000"}, {"Message": "Second problem", "code": "4001"}],
+                           "type": "ValidationFault"}}
+        self.respond(json_response(400, fault, headers={"intuit_tid": "tid-42"}))
+        with self.assertRaises(ToolError) as query_error:
+            run(server.qbo_query("SELECT * FORM Customer"))
+        with self.assertRaises(ToolError) as get_error:
+            run(server.qbo_get("NoSuchThing", "1"))
+
+        query, get = self.errors()
+        self.assertEqual({k: query[k] for k in ("environment", "realm_id", "tool", "arguments", "type", "status_code",
+                                                "fault_type", "intuit_tid")},
+                         {"environment": "sandbox", "realm_id": REALM, "tool": "qbo_query",
+                          "arguments": {"query": "SELECT * FORM Customer"}, "type": "QboApiError", "status_code": 400,
+                          "fault_type": "ValidationFault", "intuit_tid": "tid-42"})
+        self.assertEqual([e["code"] for e in query["errors"]], ["4000", "4001"])
+        self.assertEqual(query["error"], str(query_error.exception))
+        self.assertIn("intuit_tid tid-42", query["error"])
+        self.assertIn("T", query["timestamp"])
+
+        self.assertEqual((get["tool"], get["arguments"], get["type"], get["error"]),
+                         ("qbo_get", {"entity": "NoSuchThing", "id": "1"}, "EntityError", str(get_error.exception)))
+        self.assertTrue(get["error"].startswith("invalid:"))
+        self.assertNotIn("intuit_tid", get)
+        self.assertEqual(self.audit(), [])  # reads are not writes
+
+    def test_tool_errors_raised_as_is_are_logged_and_reraised_unchanged(self):
+        raised = ToolError("invalid: bad argument")
+
+        @server._tag_errors
+        async def qbo_example(first, second="default"):
+            raise raised
+
+        with self.assertRaises(ToolError) as ctx:
+            run(qbo_example("one", second="two"))
+        self.assertIs(ctx.exception, raised)
+        with self.assertRaises(ToolError):
+            run(qbo_example("one", "two", "three"))  # more arguments than the tool takes
+        logged, unbindable = self.errors()
+        self.assertEqual((logged["tool"], logged["arguments"], logged["type"], logged["realm_id"]),
+                         ("qbo_example", {"first": "one", "second": "two"}, "ToolError", None))
+        self.assertEqual(unbindable["arguments"], {"args": ["one", "two", "three"], "kwargs": {}})
+        self.assertEqual(unbindable["type"], "TypeError")
+        self.assertTrue(unbindable["error"].startswith("internal: TypeError"))
+
+    def test_failed_writes_are_logged_as_well_as_audited(self):
+        self.respond(json_response(400, {"Fault": {"Error": [{"Message": "Stale object", "code": "5010"}],
+                                                   "type": "ValidationFault"}}))
+        with self.assertRaises(ToolError):
+            run(server.qbo_delete("Invoice", "9", "0"))
+        self.assertEqual([e["operation"] for e in self.audit()], ["delete"])
+        (logged,) = self.errors()
+        self.assertEqual((logged["tool"], logged["fault_type"]), ("qbo_delete", "ValidationFault"))
+
+    def test_logging_failure_does_not_replace_the_tool_error(self):
+        with patch.object(self.runtime.errors, "record", side_effect=RuntimeError("disk on fire")), \
+                self.assertLogs("karellen_qbo_mcp.server", level="ERROR") as logs, self.assertRaises(ToolError) as ctx:
+            run(server.qbo_get("NoSuchThing", "1"))
+        self.assertTrue(str(ctx.exception).startswith("invalid:"))
+        self.assertIn("disk on fire", "\n".join(logs.output))
+
+    def test_nothing_logged_without_a_runtime(self):
+        server._runtime = None
+        with patch.dict(os.environ, {"QBO_MCP_ENVIRONMENT": "bogus"}), self.assertRaises(ToolError) as ctx:
+            run(server.qbo_get("Customer", "1"))
+        self.assertTrue(str(ctx.exception).startswith("config:"))
+        self.assertIsNone(server._runtime)
+        self.assertEqual(self.errors(), [])
+
 
 class AuthToolTests(ServerTestBase):
     def test_status_signed_out(self):

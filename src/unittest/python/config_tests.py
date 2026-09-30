@@ -45,6 +45,7 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertEqual(s.discovery_url, "https://developer.api.intuit.com/.well-known/openid_sandbox_configuration")
         self.assertEqual(s.redirect_uri, DEFAULT_SANDBOX_REDIRECT_URI)
         self.assertEqual(s.state_dir, self.base / "sandbox")
+        self.assertEqual(s.errors_path, self.base / "sandbox" / "errors.jsonl")
         self.assertEqual(s.minor_version, "75")
         self.assertFalse(s.read_only)
         self.assertIsNone(s.client_id)
