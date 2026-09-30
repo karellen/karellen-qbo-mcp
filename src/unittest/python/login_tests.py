@@ -23,8 +23,8 @@ from urllib.parse import urlsplit, parse_qs
 
 import httpx2
 
-from karellen_qbo_mcp.login import (LoginError, browser_login, local_callback_address, parse_callback_target,
-                                    open_browser_detached)
+from karellen_qbo_mcp.login import (LoginError, browser_login, is_local_redirect, local_callback_address,
+                                    parse_callback_target, pasted_login, open_browser_detached)
 from karellen_qbo_mcp.oauth import OAuthClient
 from qbo_test_support import DISCOVERY, DISCOVERY_URL, Recorder, json_response, make_tokens
 
@@ -82,7 +82,14 @@ class CallbackParsingTests(unittest.TestCase):
             with self.subTest(uri=uri):
                 with self.assertRaises(LoginError) as ctx:
                     local_callback_address(uri)
-                self.assertIn("auth import", str(ctx.exception))
+                self.assertIn("auth login", str(ctx.exception))
+
+    def test_is_local_redirect(self):
+        for uri, expected in (("http://localhost:8765/callback", True), ("http://127.0.0.1:9000", True),
+                              ("http://[::1]:9000/cb", True), ("https://localhost:8765/callback", False),
+                              ("https://karellen.example/qbo-callback", False), ("http://example.com:80/cb", False)):
+            with self.subTest(uri=uri):
+                self.assertEqual(is_local_redirect(uri), expected)
 
     def test_port_required(self):
         with self.assertRaises(LoginError):
@@ -197,6 +204,79 @@ class BrowserLoginTests(unittest.TestCase):
             with self.assertRaises(LoginError) as ctx:
                 asyncio.run(main())
             self.assertIn("Cannot listen", str(ctx.exception))
+
+
+class PastedLoginTests(unittest.TestCase):
+    REDIRECT = "https://karellen.example/qbo-callback"
+
+    def setUp(self):
+        self.oauth = FakeOAuthClient()
+        self.opened = []
+
+    def login(self, pasted, open_browser=None, **kwargs):
+        """Run pasted_login; `pasted(state)` gives the address the user pastes back."""
+        def default_browser(url):
+            self.opened.append(url)
+            return True
+
+        def read_redirect():
+            url = self.opened[-1]
+            return pasted(parse_qs(urlsplit(url).query)["state"][0])
+
+        return asyncio.run(pasted_login(self.oauth, self.REDIRECT, read_redirect,
+                                        open_browser=open_browser or default_browser, **kwargs))
+
+    def test_successful_login(self):
+        tokens = self.login(lambda state: "  %s?code=C0DE&state=%s&realmId=123145\n" % (self.REDIRECT, state))
+        self.assertEqual(tokens.realm_id, "123145")
+        self.assertEqual(self.oauth.exchanges, [("C0DE", self.REDIRECT, "123145")])
+        self.assertTrue(self.opened[0].startswith(DISCOVERY["authorization_endpoint"] + "?"), self.opened[0])
+        self.assertIn("redirect_uri=https%3A%2F%2Fkarellen.example%2Fqbo-callback", self.opened[0])
+
+    def test_host_case_ignored(self):
+        tokens = self.login(lambda state: "https://Karellen.Example/qbo-callback?code=C&state=%s&realmId=9" % state)
+        self.assertEqual(tokens.realm_id, "9")
+
+    def test_state_mismatch_rejected(self):
+        with self.assertRaises(LoginError) as ctx:
+            self.login(lambda state: "%s?code=C&state=forged&realmId=9" % self.REDIRECT)
+        self.assertIn("state does not match", str(ctx.exception))
+        self.assertEqual(self.oauth.exchanges, [])
+
+    def test_denied_consent(self):
+        with self.assertRaises(LoginError) as ctx:
+            self.login(lambda state: "%s?error=access_denied&error_description=Denied&state=%s" % (self.REDIRECT, state))
+        self.assertIn("Denied", str(ctx.exception))
+        self.assertEqual(self.oauth.exchanges, [])
+
+    def test_missing_code_or_realm(self):
+        for query in ("state=%s&realmId=9", "code=C&state=%s"):
+            with self.subTest(query=query):
+                with self.assertRaises(LoginError) as ctx:
+                    self.login(lambda state: "%s?%s" % (self.REDIRECT, query % state))
+                self.assertIn("missing", str(ctx.exception))
+        self.assertEqual(self.oauth.exchanges, [])
+
+    def test_address_not_under_redirect_uri(self):
+        for pasted in ("", "code=C&state={s}&realmId=9", "https://evil.example/qbo-callback?code=C&state={s}&realmId=9",
+                       "https://karellen.example/other?code=C&state={s}&realmId=9",
+                       "http://karellen.example/qbo-callback?code=C&state={s}&realmId=9"):
+            with self.subTest(pasted=pasted):
+                with self.assertRaises(LoginError) as ctx:
+                    self.login(lambda state: pasted.format(s=state))
+                self.assertIn("not an address under the redirect URI", str(ctx.exception))
+        self.assertEqual(self.oauth.exchanges, [])
+
+    def test_announced_url_used_when_browser_unavailable(self):
+        tokens = self.login(lambda state: "%s?code=C&state=%s&realmId=42" % (self.REDIRECT, state),
+                            open_browser=lambda url: False, announce=self.opened.append)
+        self.assertEqual(tokens.realm_id, "42")
+        self.assertEqual(len(self.opened), 1)
+
+    def test_browser_unavailable_without_announcer(self):
+        with self.assertRaises(LoginError) as ctx:
+            self.login(lambda state: self.fail("nothing to paste without a sign-in URL"), open_browser=lambda url: False)
+        self.assertIn("Open this URL manually", str(ctx.exception))
 
 
 if __name__ == "__main__":

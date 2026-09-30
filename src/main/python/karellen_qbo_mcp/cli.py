@@ -25,7 +25,7 @@ import time
 
 from karellen_qbo_mcp.config import (ENVIRONMENTS, ENV_ENVIRONMENT, ConfigError, client_config_path, load_settings,
                                      save_client_config, select_environment)
-from karellen_qbo_mcp.login import LoginError, browser_login
+from karellen_qbo_mcp.login import LoginError, browser_login, is_local_redirect, pasted_login
 from karellen_qbo_mcp.oauth import OAuthClient, OAuthError
 from karellen_qbo_mcp.tokens import TokenStore, TokenStoreError, auth_status
 
@@ -66,12 +66,20 @@ def cmd_login(args):
     def announce(url):
         print("Open this URL to sign in to QuickBooks (%s):\n%s" % (settings.environment, url), file=sys.stderr)
 
+    def read_redirect():
+        print("After approving, your browser is sent to %s (the page itself need not load).\n"
+              "Paste the full address from the address bar: " % settings.redirect_uri, end="", file=sys.stderr, flush=True)
+        return sys.stdin.readline()
+
     kwargs = {"announce": announce}
     if args.no_browser:
         kwargs["open_browser"] = lambda url: False
 
     async def login():
-        tokens = await browser_login(_oauth(settings), settings.redirect_uri, **kwargs)
+        if is_local_redirect(settings.redirect_uri):
+            tokens = await browser_login(_oauth(settings), settings.redirect_uri, **kwargs)
+        else:
+            tokens = await pasted_login(_oauth(settings), settings.redirect_uri, read_redirect, **kwargs)
         await _store(settings).save_locked(tokens)
         return tokens
 
@@ -137,7 +145,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--redirect-uri", help="Redirect URI registered for the app (sandbox default: http://localhost:8765/callback)")
     p.set_defaults(func=cmd_configure)
 
-    p = auth_commands.add_parser("login", help="Sign in through the browser (localhost redirect; sandbox keys)")
+    p = auth_commands.add_parser("login", help="Sign in through the browser (a localhost redirect URI is received "
+                                               "directly; for any other, paste the address the browser lands on)")
     p.add_argument("--no-browser", action="store_true", help="Print the sign-in URL instead of opening a browser")
     p.set_defaults(func=cmd_login)
 

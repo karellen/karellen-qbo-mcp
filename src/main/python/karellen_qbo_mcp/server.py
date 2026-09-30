@@ -265,8 +265,8 @@ async def qbo_auth_login() -> dict[str, Any]:
 
     Opens Intuit's consent page; the user picks the company and approves. Waits up to 5 minutes for the redirect
     back to the local callback listener. Works only with a plain-HTTP localhost redirect URI, which Intuit allows
-    for sandbox (development) keys. For production, the user obtains tokens in Intuit's OAuth 2.0 Playground and
-    runs `karellen-qbo-mcp --environment production auth import`.
+    for sandbox (development) keys. For production, the user signs in from a terminal with
+    `karellen-qbo-mcp --environment production auth login` and pastes the address the browser was redirected to.
     """
     rt = _get_runtime()
     if not rt.settings.redirect_uri:

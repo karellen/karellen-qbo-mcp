@@ -111,26 +111,45 @@ host, launch, disconnect, reconnect, EULA and privacy policy URLs. Intuit does n
 validate these for private apps, so for an app that only you use, placeholder HTTPS URLs
 on a domain you own will do.
 
-Intuit does not allow `localhost` redirect URIs for production keys, so production tokens
-are bootstrapped once through Intuit's **OAuth 2.0 Playground**:
+Intuit does not allow `localhost` redirect URIs for production keys, so for production
+`auth login` does not receive the redirect itself; you paste the address the browser ends
+up on:
 
-1. Add `https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl` as a production
-   redirect URI of your app.
-2. In the OAuth 2.0 Playground, select your app, choose the Accounting scope, sign in as
-   an administrator of your company, and exchange the code for tokens. Note the refresh
-   token and the company (realm) ID.
-3. Store the production keys and import the refresh token:
+1. Add an HTTPS address on a domain you control, for example
+   `https://example.com/qbo-callback`, as a production redirect URI of your app. The page
+   does not need to exist: only its address matters.
+2. Store the production keys with that redirect URI and sign in:
+
+   ```bash
+   karellen-qbo-mcp --environment production auth configure --client-id <production client ID> \
+       --redirect-uri https://example.com/qbo-callback                  # prompts for the secret
+   karellen-qbo-mcp --environment production auth login                # opens the browser
+   ```
+
+3. Sign in as an administrator of your company (any QuickBooks admin login; it needs no
+   Intuit Developer account), choose the company and approve. Copy the full address from
+   the browser's address bar and paste it at the prompt.
+
+The address carries a one-time authorization code that expires within minutes and is
+useless without your app's client secret; `auth login` checks that it belongs to this
+sign-in and exchanges it right away. The site behind the redirect URI may log the address,
+which is why it should be one you control.
+
+From then on the server keeps the authorization alive on its own. A refresh token expires
+after 100 days without use and, regardless of use, five years after the original sign-in;
+`auth status` shows both dates. When it expires, run `auth login` again.
+
+Alternatively, a refresh token from Intuit's **OAuth 2.0 Playground** (with
+`https://developer.intuit.com/v2/OAuth2Playground/RedirectUrl` registered as a production
+redirect URI) can be imported. The Playground needs one Intuit login that is both a member
+of the app's developer workspace and an administrator of the company.
 
 ```bash
-karellen-qbo-mcp --environment production auth configure --client-id <production client ID>
 karellen-qbo-mcp --environment production auth import --realm-id <company ID>   # prompts for the refresh token
 ```
 
 The import refreshes the token immediately, which validates it and replaces it with a
-fresh one the Playground no longer knows. From then on the server keeps it alive on its
-own. A refresh token expires after 100 days without use and, regardless of use, five years
-after the original sign-in; `auth status` shows both dates. When it expires, repeat the
-Playground steps.
+fresh one the Playground no longer knows.
 
 `auth logout` revokes the authorization at Intuit and deletes the local tokens.
 
@@ -142,7 +161,7 @@ Playground steps.
 | `QBO_MCP_READ_ONLY` | `1`/`true`/`yes`/`on` refuses every write | off |
 | `QBO_MCP_CONFIG_DIR` | Where credentials, tokens and the logs live | `~/.config/karellen-qbo-mcp` |
 | `QBO_MCP_CLIENT_ID`, `QBO_MCP_CLIENT_SECRET` | App credentials, overriding `auth configure` | |
-| `QBO_MCP_REDIRECT_URI` | Redirect URI for browser sign-in | `http://localhost:8765/callback` (sandbox) |
+| `QBO_MCP_REDIRECT_URI` | Redirect URI for browser sign-in (`localhost` is received directly, any other is pasted back) | `http://localhost:8765/callback` (sandbox) |
 | `QBO_MCP_MINOR_VERSION` | Accounting API minor version | `75` |
 
 Each environment keeps its own `client.json`, `tokens.json`, `audit.jsonl` and `errors.jsonl` under

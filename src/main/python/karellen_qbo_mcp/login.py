@@ -13,11 +13,13 @@
 #   See the License for the specific language governing permissions and
 #   limitations under the License.
 
-"""Browser sign-in through a one-shot localhost callback listener.
+"""Browser sign-in: the authorization-code flow, ending in one of two ways.
 
-Intuit accepts plain-HTTP localhost redirect URIs only for development (sandbox) keys.
-Production keys need an HTTPS redirect; for those, bootstrap the tokens in Intuit's
-OAuth 2.0 Playground and import the refresh token instead.
+Intuit accepts plain-HTTP localhost redirect URIs only for development (sandbox) keys; for
+those a one-shot localhost listener receives the callback. Production keys need an HTTPS
+redirect this machine cannot receive, so the user pastes the address their browser was
+redirected to (it carries the code, state and company ID; the code is useless without the
+client secret).
 """
 
 import asyncio
@@ -65,15 +67,20 @@ class CallbackParams:
     error_description: str | None
 
 
+def is_local_redirect(redirect_uri: str) -> bool:
+    parts = urlsplit(redirect_uri)
+    return parts.scheme == "http" and parts.hostname in _LOCAL_HOSTS
+
+
 def local_callback_address(redirect_uri: str) -> tuple[str, int, str]:
     """Return (host, port, path) to listen on for `redirect_uri`, which must point at this machine."""
-    parts = urlsplit(redirect_uri)
-    if parts.scheme != "http" or parts.hostname not in _LOCAL_HOSTS:
+    if not is_local_redirect(redirect_uri):
         raise LoginError(
             "Redirect URI %s is not a plain-HTTP localhost address, so this machine cannot receive the "
-            "sign-in callback. Intuit only allows such URIs for sandbox keys. For production, obtain tokens "
-            "in the Intuit OAuth 2.0 Playground and run `karellen-qbo-mcp --environment production auth import`."
-            % redirect_uri)
+            "sign-in callback. Intuit only allows such URIs for sandbox keys. Sign in from a terminal with "
+            "`karellen-qbo-mcp --environment <environment> auth login`, which asks for the address the browser "
+            "was redirected to." % redirect_uri)
+    parts = urlsplit(redirect_uri)
     if parts.port is None:
         raise LoginError("Redirect URI %s must include an explicit port" % redirect_uri)
     return parts.hostname, parts.port, parts.path or "/"
@@ -142,10 +149,7 @@ async def browser_login(oauth: OAuthClient, redirect_uri: str, open_browser=webb
     received = asyncio.get_running_loop().create_future()
     server = await _serve_callback(host, port, path, received)
     try:
-        if announce is not None:
-            announce(url)
-        if not open_browser(url) and announce is None:
-            raise LoginError("Could not open a browser. Open this URL manually: %s" % url)
+        _present(url, open_browser, announce)
         try:
             params = await asyncio.wait_for(received, timeout)
         except asyncio.TimeoutError as e:
@@ -153,7 +157,39 @@ async def browser_login(oauth: OAuthClient, redirect_uri: str, open_browser=webb
     finally:
         server.close()
         await server.wait_closed()
+    return await _complete(oauth, redirect_uri, state, params)
 
+
+async def pasted_login(oauth: OAuthClient, redirect_uri: str, read_redirect, open_browser=webbrowser.open,
+                       announce=None) -> Tokens:
+    """Run the authorization-code flow for a redirect URI this machine cannot receive.
+
+    `read_redirect()` returns the address the user's browser was redirected to after approving.
+    """
+    state = secrets.token_urlsafe(32)
+    url = await oauth.authorization_url(redirect_uri, state)
+    _present(url, open_browser, announce)
+    pasted = read_redirect().strip()
+    if _without_query(pasted) != _without_query(redirect_uri):
+        raise LoginError("%r is not an address under the redirect URI %s; paste the full address from the "
+                         "browser's address bar" % (pasted, redirect_uri))
+    return await _complete(oauth, redirect_uri, state, parse_callback_target(pasted))
+
+
+def _without_query(uri: str) -> tuple[str, str, str]:
+    parts = urlsplit(uri)
+    return parts.scheme, parts.netloc.lower(), parts.path
+
+
+def _present(url: str, open_browser, announce):
+    if announce is not None:
+        announce(url)
+    if not open_browser(url) and announce is None:
+        raise LoginError("Could not open a browser. Open this URL manually: %s" % url)
+
+
+async def _complete(oauth: OAuthClient, redirect_uri: str, state: str, params: CallbackParams) -> Tokens:
+    """Check the redirect's parameters against the sign-in that produced `state` and exchange the code."""
     if params.error:
         raise LoginError("Intuit sign-in failed: %s" % (params.error_description or params.error))
     if not params.state or not secrets.compare_digest(params.state, state):

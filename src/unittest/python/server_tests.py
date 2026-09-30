@@ -202,6 +202,14 @@ class AuthToolTests(ServerTestBase):
         with self.assertRaises(ToolError):
             run(server.qbo_auth_login())
 
+    def test_login_with_https_redirect_points_to_terminal(self):
+        server._runtime = server.Runtime(make_settings(self.tmp, environment="production",
+                                                       redirect_uri="https://karellen.example/qbo-callback"))
+        with self.assertRaises(ToolError) as ctx:
+            run(server.qbo_auth_login())
+        self.assertTrue(str(ctx.exception).startswith("auth: Redirect URI https://karellen.example/qbo-callback"))
+        self.assertIn("auth login", str(ctx.exception))
+
     def test_not_signed_in_is_auth_error(self):
         self.respond(signed_in=False)
         with self.assertRaises(ToolError) as ctx:
