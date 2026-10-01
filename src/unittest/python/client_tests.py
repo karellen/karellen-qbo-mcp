@@ -349,6 +349,19 @@ class WriteTests(ClientTestBase):
                                                      "VendorRef": {"value": "91"}, "sparse": True})
         self.assertEqual(data, {"Id": "4", "SyncToken": "3", "PrivateNote": "new"})
 
+    def test_sparse_update_of_bill_payment_lines_fills_vendor(self):
+        # QuickBooks rejects a sparse BillPayment update that sends Line without VendorRef (error 2020).
+        current = {"Id": "4907", "SyncToken": "0", "VendorRef": {"value": "34"}, "PayType": "Check", "TotalAmt": 760.56}
+        client = self.client(json_response(200, {"BillPayment": current}),
+                             json_response(200, {"BillPayment": {"Id": "4907", "SyncToken": "1"}}))
+        lines = [{"Amount": 760.56, "LinkedTxn": [{"TxnId": "4900", "TxnType": "Bill"}]},
+                 {"Amount": 90.0, "LinkedTxn": [{"TxnId": "4905", "TxnType": "VendorCredit"}]}]
+        run(client.update(get_entity("BillPayment"), {"Id": "4907", "SyncToken": "0", "TotalAmt": 670.56,
+                                                      "Line": lines}, True, "rid"))
+        self.assertEqual(self.request(0).method, "GET")
+        self.assertEqual(self.recorder.body_json(1), {"Id": "4907", "SyncToken": "0", "TotalAmt": 670.56, "Line": lines,
+                                                      "VendorRef": {"value": "34"}, "sparse": True})
+
     def test_sparse_update_with_required_fields_does_not_read(self):
         client = self.client(json_response(200, {"Transfer": {"Id": "7"}}))
         data = {"Id": "7", "SyncToken": "1", "FromAccountRef": {"value": "35"}, "ToAccountRef": {"value": "36"},

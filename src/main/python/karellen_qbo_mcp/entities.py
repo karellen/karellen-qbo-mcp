@@ -94,7 +94,7 @@ _ENTITIES = [
     EntitySpec("Preferences", "singleton"),
     _txn("Attachable"),
     _txn("Bill", sparse_requires=("VendorRef",)),
-    _txn("BillPayment", void_style=VOID_INCLUDE),
+    _txn("BillPayment", void_style=VOID_INCLUDE, sparse_requires=("VendorRef",)),
     _txn("CreditCardPayment", element_name="CreditCardPaymentTxn",
          sparse_requires=("CreditCardAccountRef", "BankAccountRef", "Amount")),
     _txn("CreditMemo"),
