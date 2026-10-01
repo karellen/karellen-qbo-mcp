@@ -43,10 +43,16 @@ class EntitySpec:
     # Fields QuickBooks rejects a sparse update without (verified in the sandbox); updates copy the record's
     # current values of whichever of them it has.
     sparse_requires: tuple[str, ...] = ()
+    # The element QuickBooks wraps one record in, where it is not the entity name (verified in the sandbox).
+    element_name: str | None = None
 
     @property
     def path(self) -> str:
         return self.name.lower()
+
+    @property
+    def element(self) -> str:
+        return self.element_name or self.name
 
     def capabilities(self) -> list[str]:
         caps = ["read", "query"]
@@ -89,7 +95,8 @@ _ENTITIES = [
     _txn("Attachable"),
     _txn("Bill", sparse_requires=("VendorRef",)),
     _txn("BillPayment", void_style=VOID_INCLUDE),
-    _txn("CreditCardPayment"),
+    _txn("CreditCardPayment", element_name="CreditCardPaymentTxn",
+         sparse_requires=("CreditCardAccountRef", "BankAccountRef", "Amount")),
     _txn("CreditMemo"),
     _txn("Deposit", sparse_requires=("DepositToAccountRef",)),
     _txn("Estimate", sendable=True, pdf=True),

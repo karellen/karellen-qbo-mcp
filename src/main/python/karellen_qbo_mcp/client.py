@@ -319,7 +319,7 @@ class QboClient:
             if not entity_id:
                 raise QboError("%s requires an Id" % spec.name)
             path = "%s/%s" % (spec.path, quote(str(entity_id), safe=""))
-        return await self._get(path, spec.name)
+        return await self._get(path, spec.element)
 
     async def query(self, statement: str) -> dict:
         return await self._post("query", "QueryResponse", content=statement.encode("utf-8"),
@@ -366,7 +366,7 @@ class QboClient:
 
     async def create(self, spec: EntitySpec, data: dict, request_id: str) -> dict:
         require_capability(spec, "create")
-        return await self._post(spec.path, spec.name, json_body=data, request_id=request_id)
+        return await self._post(spec.path, spec.element, json_body=data, request_id=request_id)
 
     async def update(self, spec: EntitySpec, data: dict, sparse: bool, request_id: str) -> dict:
         require_capability(spec, "update")
@@ -378,7 +378,7 @@ class QboClient:
         if sparse:
             body.update(await self.sparse_fill(spec, data))
             body["sparse"] = True
-        return await self._post(spec.path, spec.name, json_body=body, request_id=request_id)
+        return await self._post(spec.path, spec.element, json_body=body, request_id=request_id)
 
     async def sparse_fill(self, spec: EntitySpec, data: dict) -> dict:
         """The fields a sparse update of `data` needs but lacks (spec.sparse_requires), at the record's current values.
@@ -394,7 +394,7 @@ class QboClient:
 
     async def delete(self, spec: EntitySpec, entity_id: str, sync_token: str, request_id: str) -> dict:
         require_capability(spec, "delete")
-        return await self._post(spec.path, spec.name, params={"operation": "delete"},
+        return await self._post(spec.path, spec.element, params={"operation": "delete"},
                                 json_body={"Id": str(entity_id), "SyncToken": str(sync_token)}, request_id=request_id)
 
     async def deactivate(self, spec: EntitySpec, entity_id: str, sync_token: str, request_id: str) -> dict:
@@ -410,12 +410,12 @@ class QboClient:
         else:
             params = {"operation": "update", "include": "void"}
             body["sparse"] = True
-        return await self._post(spec.path, spec.name, params=params, json_body=body, request_id=request_id)
+        return await self._post(spec.path, spec.element, params=params, json_body=body, request_id=request_id)
 
     async def send(self, spec: EntitySpec, entity_id: str, send_to: str | None, request_id: str) -> dict:
         require_capability(spec, "send")
         params = {"sendTo": send_to} if send_to else None
-        return await self._post("%s/%s/send" % (spec.path, quote(str(entity_id), safe="")), spec.name, params=params,
+        return await self._post("%s/%s/send" % (spec.path, quote(str(entity_id), safe="")), spec.element, params=params,
                                 content=b"", content_type="application/octet-stream", request_id=request_id)
 
     async def pdf(self, spec: EntitySpec, entity_id: str) -> bytes:

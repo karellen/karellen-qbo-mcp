@@ -158,6 +158,22 @@ class SandboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(term["DayOfMonthDue"], 15)
         self.assertFalse((await server.qbo_deactivate("Term", term["Id"], term["SyncToken"]))["Active"])
 
+    async def test_credit_card_payment_lifecycle(self):
+        # QuickBooks answers for a CreditCardPayment with a CreditCardPaymentTxn element.
+        bank = await self.first("SELECT * FROM Account WHERE AccountType = 'Bank' MAXRESULTS 1")
+        card = await self.first("SELECT * FROM Account WHERE AccountType = 'Credit Card' MAXRESULTS 1")
+        payment = await server.qbo_create("CreditCardPayment", {
+            "TxnDate": self.today, "Amount": 12.34, "PrivateNote": self.tag,
+            "BankAccountRef": {"value": bank["Id"]}, "CreditCardAccountRef": {"value": card["Id"]}})
+        self.assertEqual(float(payment["Amount"]), 12.34)
+        read = await server.qbo_get("CreditCardPayment", payment["Id"])
+        self.assertEqual(read["CreditCardAccountRef"]["value"], card["Id"])
+        updated = await server.qbo_update("CreditCardPayment", {"Id": read["Id"], "SyncToken": read["SyncToken"],
+                                                                "PrivateNote": self.tag + " updated"})
+        self.assertEqual(updated["PrivateNote"], self.tag + " updated")
+        deleted = await server.qbo_delete("CreditCardPayment", updated["Id"], updated["SyncToken"])
+        self.assertEqual(deleted["status"], "Deleted")
+
     async def test_reports_flatten(self):
         year_start = datetime.date.today().replace(month=1, day=1).isoformat()
         for name in ("ProfitAndLoss", "BalanceSheet", "TrialBalance", "AgedReceivables", "GeneralLedger"):

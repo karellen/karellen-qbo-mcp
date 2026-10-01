@@ -222,6 +222,13 @@ class ReadAndQueryTests(ClientTestBase):
         with self.assertRaises(QboError):
             run(client.read(get_entity("Invoice"), None))
 
+    def test_read_credit_card_payment_unwraps_txn_element(self):
+        # QuickBooks wraps a CreditCardPayment in a CreditCardPaymentTxn element.
+        client = self.client(json_response(200, {"CreditCardPaymentTxn": {"Id": "4726", "Amount": 660.39},
+                                                 "time": "2026-10-01T00:20:00-07:00"}))
+        self.assertEqual(run(client.read(get_entity("CreditCardPayment"), "4726")), {"Id": "4726", "Amount": 660.39})
+        self.assertTrue(str(self.request().url).startswith(BASE + "creditcardpayment/4726?"))
+
     def test_query_posts_statement_as_text(self):
         client = self.client(json_response(200, {"QueryResponse": {"Customer": [{"Id": "1"}, {"Id": "2"}]}}))
         result = run(client.query("SELECT * FROM Customer"))
@@ -392,6 +399,26 @@ class WriteTests(ClientTestBase):
         request = self.request()
         self.assertEqual(request.url.params["operation"], "delete")
         self.assertEqual(self.recorder.body_json(), {"Id": "9", "SyncToken": "4"})
+
+    def test_credit_card_payment_writes_unwrap_txn_element(self):
+        spec = get_entity("CreditCardPayment")
+        current = {"Id": "7", "SyncToken": "0", "Amount": 10.0, "BankAccountRef": {"value": "111"},
+                   "CreditCardAccountRef": {"value": "91"}}
+        client = self.client(json_response(200, {"CreditCardPaymentTxn": {"Id": "7", "SyncToken": "0"}}),
+                             json_response(200, {"CreditCardPaymentTxn": current}),
+                             json_response(200, {"CreditCardPaymentTxn": {"Id": "7", "SyncToken": "1"}}),
+                             json_response(200, {"CreditCardPaymentTxn": {"Id": "7", "status": "Deleted"}}))
+        created = run(client.create(spec, {"Amount": 10.0}, "rid-1"))
+        self.assertEqual(created, {"Id": "7", "SyncToken": "0"})
+        self.assertTrue(str(self.request().url).startswith(BASE + "creditcardpayment?"))
+        # A sparse update needs both accounts and the amount, which are read from the record.
+        updated = run(client.update(spec, {"Id": "7", "SyncToken": "0", "PrivateNote": "autopay"}, True, "rid-2"))
+        self.assertEqual(updated["SyncToken"], "1")
+        self.assertEqual(self.recorder.body_json(), {"Id": "7", "SyncToken": "0", "PrivateNote": "autopay", "Amount": 10.0,
+                                                     "BankAccountRef": {"value": "111"},
+                                                     "CreditCardAccountRef": {"value": "91"}, "sparse": True})
+        deleted = run(client.delete(spec, "7", "1", "rid-3"))
+        self.assertEqual(deleted["status"], "Deleted")
 
     def test_delete_rejected_for_name_list(self):
         client = self.client()
