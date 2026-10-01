@@ -22,6 +22,7 @@ the sandbox company, so never point them at production.
 """
 
 import datetime
+import json
 import os
 import tempfile
 import unittest
@@ -140,6 +141,19 @@ class SandboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(count["totalCount"], 0)
         everything = await server.qbo_query("SELECT * FROM Account", fetch_all=True, limit=5000)
         self.assertEqual(everything["count"], count["totalCount"])
+
+    async def test_query_and_report_to_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            accounts = Path(tmp) / "accounts.json"
+            saved = await server.qbo_query("SELECT * FROM Account", fetch_all=True, limit=5000,
+                                           output_path=str(accounts))
+            inline = await server.qbo_query("SELECT * FROM Account", fetch_all=True, limit=5000)
+            self.assertEqual(json.loads(accounts.read_text()), inline)
+            self.assertEqual(saved["count"], inline["count"])
+            report = Path(tmp) / "pnl.json"
+            await server.qbo_report("ProfitAndLoss", {"start_date": self.today, "end_date": self.today},
+                                    output_path=str(report))
+            self.assertEqual(json.loads(report.read_text())["header"]["ReportName"], "ProfitAndLoss")
 
 
 if __name__ == "__main__":
