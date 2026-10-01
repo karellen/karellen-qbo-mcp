@@ -148,6 +148,18 @@ class SandboxTests(unittest.IsolatedAsyncioTestCase):
             "Id": bill["Id"], "SyncToken": bill["SyncToken"], "PrivateNote": self.tag + " batch"}}])
         self.assertNotIn("fault", results[0], results)
         bill = results[0]["result"]
+        # A BillPayment needs VendorRef only when the sparse update sends Line.
+        bank = await self.first("SELECT * FROM Account WHERE AccountType = 'Bank' MAXRESULTS 1")
+        lines = [{"Amount": 7.04, "LinkedTxn": [{"TxnId": bill["Id"], "TxnType": "Bill"}]}]
+        payment = await server.qbo_create("BillPayment", {
+            "VendorRef": {"value": vendor["Id"]}, "PayType": "Check", "TotalAmt": 7.04, "Line": lines,
+            "CheckPayment": {"BankAccountRef": {"value": bank["Id"]}}})
+        payment = await server.qbo_update("BillPayment", {"Id": payment["Id"], "SyncToken": payment["SyncToken"],
+                                                          "TotalAmt": 7.04, "Line": lines, "PrivateNote": self.tag})
+        self.assertEqual(payment["PrivateNote"], self.tag)
+        self.assertEqual(payment["VendorRef"]["value"], vendor["Id"])
+        await server.qbo_delete("BillPayment", payment["Id"], payment["SyncToken"])
+        bill = await server.qbo_get("Bill", bill["Id"])
         await server.qbo_delete("Bill", bill["Id"], bill["SyncToken"])
 
         cls = await server.qbo_create("Class", {"Name": "%s class" % self.tag})

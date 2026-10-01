@@ -50,13 +50,14 @@ class EntityRegistryTests(unittest.TestCase):
 
     def test_sparse_requires(self):
         # Verified in the sandbox: QuickBooks rejects sparse updates of these without the listed fields.
-        expected = {"Bill": ("VendorRef",), "VendorCredit": ("VendorRef",), "Deposit": ("DepositToAccountRef",),
+        expected = {"Bill": ("VendorRef",), "VendorCredit": ("VendorRef",), "BillPayment": ("VendorRef",),
+                    "Deposit": ("DepositToAccountRef",),
                     "Purchase": ("PaymentType",), "Transfer": ("FromAccountRef", "ToAccountRef", "Amount"),
                     "CreditCardPayment": ("CreditCardAccountRef", "BankAccountRef", "Amount"),
                     "Class": ("Name",), "Department": ("Name",), "Term": ("Name", "Type", "DueDays", "DayOfMonthDue")}
         for name, fields in expected.items():
             self.assertEqual(get_entity(name).sparse_requires, fields, name)
-        for name in ("Invoice", "Payment", "BillPayment", "JournalEntry", "Customer", "Vendor", "Account"):
+        for name in ("Invoice", "Payment", "JournalEntry", "Customer", "Vendor", "Account"):
             self.assertEqual(get_entity(name).sparse_requires, (), name)
 
     def test_response_element(self):
