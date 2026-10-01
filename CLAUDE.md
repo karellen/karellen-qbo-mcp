@@ -56,8 +56,8 @@ Module responsibilities (`src/main/python/karellen_qbo_mcp/`):
 
 The repository doubles as a Claude Code plugin (loaded via `--plugin-dir` or marketplace):
 
-- **`.claude-plugin/plugin.json`** -- Plugin manifest
-- **`.mcp.json`** -- Registers the `karellen-qbo-mcp` stdio server
+- **`.claude-plugin/plugin.json`** -- Plugin manifest, with `userConfig` options `environment` (`sandbox`/`production`) and `read_only` (boolean). Its `version` pins installed copies: bump it whenever a plugin artifact changes, or users keep the cached copy
+- **`.mcp.json`** -- Registers the `karellen-qbo-mcp` stdio server, passing the options as `QBO_MCP_ENVIRONMENT` and `QBO_MCP_READ_ONLY` (an empty value means the default)
 - **`hooks/hooks.json`** + **`scripts/check-prerequisites.sh`** -- SessionStart check that `karellen-qbo-mcp` is on PATH
 - **`skills/qbo-bookkeeping/SKILL.md`** -- Supervised bookkeeping workflow (orient, look up, propose, post, verify)
 

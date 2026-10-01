@@ -57,6 +57,10 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertEqual(s.discovery_url, "https://developer.api.intuit.com/.well-known/openid_configuration")
         self.assertIsNone(s.redirect_uri)
 
+    def test_empty_environment_means_sandbox(self):
+        # The plugin passes its environment option through, empty when unset.
+        self.assertEqual(load_settings(dict(self.environ, QBO_MCP_ENVIRONMENT="")).environment, "sandbox")
+
     def test_explicit_environment_overrides_variable(self):
         s = load_settings(dict(self.environ, QBO_MCP_ENVIRONMENT="production"), environment="sandbox")
         self.assertEqual(s.environment, "sandbox")
@@ -84,8 +88,8 @@ class LoadSettingsTests(unittest.TestCase):
                          ("env-id", "env-secret", "http://localhost:2/cb", "76"))
 
     def test_read_only_values(self):
-        for value, expected in (("1", True), ("TRUE", True), ("yes", True), ("on", True), ("0", False), ("", False),
-                                ("no", False)):
+        for value, expected in (("1", True), ("TRUE", True), ("true", True), ("yes", True), ("on", True), ("0", False),
+                                ("", False), ("no", False), ("false", False)):
             with self.subTest(value=value):
                 self.assertEqual(load_settings(dict(self.environ, QBO_MCP_READ_ONLY=value)).read_only, expected)
 

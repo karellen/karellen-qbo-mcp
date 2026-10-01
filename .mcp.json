@@ -2,7 +2,11 @@
   "mcpServers": {
     "karellen-qbo-mcp": {
       "type": "stdio",
-      "command": "karellen-qbo-mcp"
+      "command": "karellen-qbo-mcp",
+      "env": {
+        "QBO_MCP_ENVIRONMENT": "${user_config.environment}",
+        "QBO_MCP_READ_ONLY": "${user_config.read_only}"
+      }
     }
   }
 }
