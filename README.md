@@ -67,6 +67,11 @@ claude plugin marketplace add karellen/claude-plugins
 claude plugin install karellen-qbo-mcp@karellen-plugins
 ```
 
+Claude Code auto-updates only Anthropic's own marketplaces by default. To receive new
+plugin releases automatically, turn on **Enable auto-update** for `karellen-plugins` under
+`/plugin` → **Marketplaces**; otherwise run `claude plugin update
+karellen-qbo-mcp@karellen-plugins`.
+
 The plugin asks for two settings when it is enabled, which you can change later in
 `/config`: the QuickBooks **environment** (`sandbox` or `production`, default `sandbox`) and
 **read-only mode** (default off). They set `QBO_MCP_ENVIRONMENT` and `QBO_MCP_READ_ONLY`

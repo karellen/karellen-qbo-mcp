@@ -56,7 +56,7 @@ Module responsibilities (`src/main/python/karellen_qbo_mcp/`):
 
 The repository doubles as a Claude Code plugin (loaded via `--plugin-dir` or marketplace):
 
-- **`.claude-plugin/plugin.json`** -- Plugin manifest, with `userConfig` options `environment` (`sandbox`/`production`) and `read_only` (boolean). Its `version` pins installed copies: bump it whenever a plugin artifact changes, or users keep the cached copy
+- **`.claude-plugin/plugin.json`** -- Plugin manifest, with `userConfig` options `environment` (`sandbox`/`production`) and `read_only` (boolean). Deliberately has no `version`: a manifest version overrides the marketplace entry's and pins installed copies until someone edits it. The plugin's version is the marketplace entry's, which follows the latest GitHub release (see CI)
 - **`.mcp.json`** -- Registers the `karellen-qbo-mcp` stdio server, passing the options as `QBO_MCP_ENVIRONMENT` and `QBO_MCP_READ_ONLY` (an empty value means the default)
 - **`hooks/hooks.json`** + **`scripts/check-prerequisites.sh`** -- SessionStart check that `karellen-qbo-mcp` is on PATH
 - **`skills/qbo-bookkeeping/SKILL.md`** -- Supervised bookkeeping workflow (orient, look up, propose, post, verify)
@@ -65,4 +65,4 @@ When changing tool semantics, MCP server behavior, or environment variable handl
 
 ## CI
 
-GitHub Actions (`.github/workflows/build.yml`): matrix build on ubuntu-latest across Python 3.10-3.14. Deploy (PyPI upload) from Python 3.14 on push to master. Uses `pybuilder/build@master` action. Commit messages containing `[release]` or `[release <version>]` trigger a release. Publishing a GitHub release runs `.github/workflows/notify-marketplace.yml`, which asks `karellen/claude-plugins` to update the plugin's marketplace version (needs the `PAT_TOKEN` secret; uploads need `PYPI_TOKEN`).
+GitHub Actions (`.github/workflows/build.yml`): matrix build on ubuntu-latest across Python 3.10-3.14. Deploy (PyPI upload) from Python 3.14 on push to master. Uses `pybuilder/build@master` action. Commit messages containing `[release]` or `[release <version>]` trigger a release. Publishing a GitHub release runs `.github/workflows/notify-marketplace.yml`, which asks `karellen/claude-plugins` to update the plugin's marketplace version (needs the `PAT_TOKEN` secret; uploads need `PYPI_TOKEN`). That version change is what makes Claude Code update installed plugins, so plugin changes reach users with the next release.
