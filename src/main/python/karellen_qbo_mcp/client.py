@@ -54,6 +54,10 @@ _PAGING_CLAUSE = re.compile(r"\b(STARTPOSITION|MAXRESULTS)\b", re.IGNORECASE)
 _COUNT_QUERY = re.compile(r"^\s*SELECT\s+COUNT\s*\(", re.IGNORECASE)
 
 
+def is_count_query(statement: str) -> bool:
+    return bool(_COUNT_QUERY.match(statement))
+
+
 class QboError(Exception):
     pass
 
@@ -321,28 +325,37 @@ class QboClient:
         return await self._post("query", "QueryResponse", content=statement.encode("utf-8"),
                                 content_type="application/text")
 
-    async def query_all(self, statement: str, limit: int) -> dict:
+    async def query_all(self, statement: str, limit: int, on_page=None) -> dict:
         """Run a query page by page (1000 rows per page) until exhausted or `limit` rows are collected.
 
-        A COUNT query has no rows to page through; it runs once and returns QuickBooks' response.
+        A COUNT query has no rows to page through; it runs once and returns QuickBooks' response. Given an async
+        `on_page`, each page's rows are handed to it as they arrive instead of being collected into "rows".
         """
         if _PAGING_CLAUSE.search(statement):
             raise QboError("Remove STARTPOSITION/MAXRESULTS from the query to fetch all pages")
-        if _COUNT_QUERY.match(statement):
+        if is_count_query(statement):
             return await self.query(statement)
         base = statement.rstrip().rstrip(";")
-        rows, entity, position = [], None, 1
-        while len(rows) < limit:
-            page_size = min(QUERY_PAGE_SIZE, limit - len(rows))
+        rows, entity, count, position, truncated = [], None, 0, 1, False
+        while count < limit:
+            page_size = min(QUERY_PAGE_SIZE, limit - count)
             page_entity, page = await self._query_page(base, position, page_size)
             entity = page_entity or entity
-            rows.extend(page)
+            if on_page is None:
+                rows.extend(page)
+            else:
+                await on_page(page)
+            count += len(page)
             if len(page) < page_size:
-                return {"entity": entity, "rows": rows, "count": len(rows), "truncated": False}
+                break
             position += len(page)
-        # The limit was reached on a full page: only one more row tells whether anything was left out.
-        _, rest = await self._query_page(base, position, 1)
-        return {"entity": entity, "rows": rows, "count": len(rows), "truncated": bool(rest)}
+        else:
+            # The limit was reached on a full page: only one more row tells whether anything was left out.
+            _, rest = await self._query_page(base, position, 1)
+            truncated = bool(rest)
+        if on_page is not None:
+            return {"entity": entity, "count": count, "truncated": truncated}
+        return {"entity": entity, "rows": rows, "count": count, "truncated": truncated}
 
     async def _query_page(self, base: str, position: int, size: int) -> tuple[str | None, list]:
         response = await self.query("%s STARTPOSITION %d MAXRESULTS %d" % (base, position, size))

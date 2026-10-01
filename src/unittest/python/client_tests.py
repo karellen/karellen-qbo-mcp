@@ -19,7 +19,7 @@ import unittest
 
 import httpx2
 
-from karellen_qbo_mcp.client import QboAuthError, QboApiError, QboError
+from karellen_qbo_mcp.client import QboAuthError, QboApiError, QboError, is_count_query
 from karellen_qbo_mcp.entities import get_entity, EntityError
 from karellen_qbo_mcp.oauth import OAuthError
 from qbo_test_support import (NOW, REALM, BASE, make_settings, make_tokens, FakeOAuth, Recorder, json_response,
@@ -271,6 +271,36 @@ class ReadAndQueryTests(ClientTestBase):
         client = self.client(json_response(200, {"QueryResponse": {}}))
         self.assertEqual(run(client.query_all("SELECT * FROM Bill", 10)),
                          {"entity": None, "rows": [], "count": 0, "truncated": False})
+
+    def test_query_all_hands_pages_to_callback_instead_of_collecting(self):
+        page1 = [{"Id": str(i)} for i in range(1000)]
+        page2 = [{"Id": "1000"}, {"Id": "1001"}]
+        client = self.client(json_response(200, {"QueryResponse": {"Invoice": page1}}),
+                             json_response(200, {"QueryResponse": {"Invoice": page2}}))
+        pages = []
+
+        async def on_page(rows):
+            pages.append(rows)
+
+        result = run(client.query_all("SELECT * FROM Invoice", 5000, on_page=on_page))
+        self.assertEqual(result, {"entity": "Invoice", "count": 1002, "truncated": False})
+        self.assertEqual(pages, [page1, page2])
+
+    def test_query_all_callback_with_truncation(self):
+        client = self.client(json_response(200, {"QueryResponse": {"Bill": [{"Id": "1"}, {"Id": "2"}]}}),
+                             json_response(200, {"QueryResponse": {"Bill": [{"Id": "3"}]}}))
+        pages = []
+
+        async def on_page(rows):
+            pages.append(rows)
+
+        result = run(client.query_all("SELECT * FROM Bill", 2, on_page=on_page))
+        self.assertEqual(result, {"entity": "Bill", "count": 2, "truncated": True})
+        self.assertEqual(pages, [[{"Id": "1"}, {"Id": "2"}]])
+
+    def test_count_query_detection(self):
+        self.assertTrue(is_count_query("  select count(*) FROM Bill"))
+        self.assertFalse(is_count_query("SELECT * FROM Bill"))
 
     def test_query_all_rejects_paging_clauses(self):
         client = self.client()

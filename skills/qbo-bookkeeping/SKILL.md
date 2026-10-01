@@ -27,6 +27,11 @@ filings. Work like a careful bookkeeper who asks before posting.
   `SELECT Id, DisplayName FROM Vendor WHERE DisplayName LIKE '%Acme%'`.
 - Query language limits: one entity per query, no joins, no `OR`, only some fields
   are filterable, at most 1000 rows per call (`fetch_all=True` pages for you).
+- Never pull large results inline. For `fetch_all`, wide entities (`Attachable` rows
+  carry long temporary download URLs) and detail reports (`TransactionList`,
+  `GeneralLedger`), pass `output_path` to `qbo_query`/`qbo_report` and read the file
+  with `jq`. Select only the fields you need, and run `SELECT COUNT(*)` first when
+  unsure of the size.
 - Check for duplicates before creating: search by DocNumber, amount and date, or by
   DisplayName for name-list records.
 - For accounts, confirm the AccountType/AccountSubType fits the posting (an expense to

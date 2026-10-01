@@ -17,6 +17,7 @@
 
 import functools
 import inspect
+import json
 import logging
 import mimetypes
 import os
@@ -31,10 +32,10 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 from karellen_qbo_mcp.audit import AuditLog, ErrorLog
-from karellen_qbo_mcp.client import QboClient, QboError, QboAuthError, QboApiError, BATCH_LIMIT
+from karellen_qbo_mcp.client import QboClient, QboError, QboAuthError, QboApiError, BATCH_LIMIT, is_count_query
 from karellen_qbo_mcp.config import Settings, ConfigError, load_settings
 from karellen_qbo_mcp.entities import EntityError, get_entity, require_capability, describe_entities
-from karellen_qbo_mcp.files import write_private_file
+from karellen_qbo_mcp.files import PrivateFile, write_private_file
 from karellen_qbo_mcp.login import LoginError, browser_login, open_browser_detached
 from karellen_qbo_mcp.oauth import OAuthClient, OAuthError
 from karellen_qbo_mcp.reports import KNOWN_REPORTS, ReportError, validate_report_name, flatten_report
@@ -52,14 +53,14 @@ mcp = MCPServer("karellen-qbo-mcp", instructions=(
     "and voids. Prefer sparse updates (the default); a full update clears every writable field you omit. Use "
     "dry_run=True to preview a write, especially updates, whose preview shows a field-by-field diff. Name-list "
     "records (accounts, customers, vendors, items) are deactivated, never deleted. Summarize amounts, accounts and "
-    "dates to the user before posting. Verify results with reports (qbo_report) afterwards."
+    "dates to the user before posting. Verify results with reports (qbo_report) afterwards. Send large query and "
+    "report results to a file (output_path) and read it with a tool such as jq instead of returning them inline."
 ))
 
+# Read and write are with respect to QuickBooks: a read that saves its result to a local file is still a read.
 READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=True)
 ADDITIVE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True)
-# Reads from QuickBooks that write a local file (and with overwrite=True replace one).
-LOCAL_WRITE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True)
 
 
 class Runtime:
@@ -244,6 +245,36 @@ async def _write_output(target: Path, content: bytes, overwrite: bool) -> dict:
     return {"path": str(target), "bytes": len(content)}
 
 
+async def _write_query_pages(client: QboClient, query: str, limit: int, target: Path, overwrite: bool) -> dict:
+    """Write a fetch_all result to `target` page by page, so only one page is held in memory at a time.
+
+    The file holds the same JSON object qbo_query would return, with "rows" first since the entity name, count
+    and truncation are only known after the last page.
+    """
+    file = await anyio.to_thread.run_sync(PrivateFile, target, overwrite)
+    try:
+        await anyio.to_thread.run_sync(file.write, b'{"rows": [')
+        separator = b""
+
+        async def on_page(rows):
+            nonlocal separator
+            if rows:
+                chunk = separator + b", ".join(json.dumps(row).encode("utf-8") for row in rows)
+                await anyio.to_thread.run_sync(file.write, chunk)
+                separator = b", "
+
+        summary = await client.query_all(query, limit, on_page=on_page)
+        # summary is a JSON object; continue the open one with its members.
+        await anyio.to_thread.run_sync(file.write, b"], " + json.dumps(summary)[1:].encode("utf-8"))
+        await anyio.to_thread.run_sync(file.commit)
+    except FileExistsError:
+        raise ToolError("invalid: %s already exists; pass overwrite=True to replace it" % target)
+    except BaseException:
+        file.discard()
+        raise
+    return {"path": str(target), "bytes": file.size, **summary}
+
+
 # --- Authentication ------------------------------------------------------------
 
 @mcp.tool(annotations=READ_ONLY)
@@ -302,25 +333,36 @@ async def qbo_get(entity: str, id: str | None = None) -> dict[str, Any]:
 
 @mcp.tool(annotations=READ_ONLY)
 @_tag_errors
-async def qbo_query(query: str, fetch_all: bool = False, limit: int = 1000) -> dict[str, Any]:
+async def qbo_query(query: str, fetch_all: bool = False, limit: int = 1000, output_path: str | None = None,
+                    overwrite: bool = False) -> dict[str, Any]:
     """Run a QuickBooks query (SQL-like, one entity per query).
 
     Examples: "SELECT * FROM Invoice WHERE Balance > '0' ORDERBY TxnDate DESC",
     "SELECT COUNT(*) FROM Customer WHERE Active = true". There are no joins, no OR, and only a subset of fields
     is filterable. A single call returns at most 1000 rows; use STARTPOSITION/MAXRESULTS to page, or
-    fetch_all=True (without those clauses) to page automatically.
+    fetch_all=True (without those clauses) to page automatically. Send large results (fetch_all, wide
+    entities such as Attachable) to a file with output_path and read it with a tool such as jq.
 
     Args:
         query: The query statement.
         fetch_all: Page through all results up to `limit` rows.
         limit: Row cap for fetch_all (at most 100000).
+        output_path: Absolute path of a JSON file to write the result to instead of returning it; its directory
+            must exist. The file holds what the tool would have returned; the tool returns the path, the file
+            size and, for fetch_all, the entity, row count and truncation. fetch_all pages are written as they
+            arrive.
+        overwrite: Replace output_path if it already exists.
     """
     client = _get_runtime().client
-    if fetch_all:
-        if limit < 1 or limit > MAX_QUERY_ROWS:
-            raise ToolError("invalid: limit must be between 1 and %d" % MAX_QUERY_ROWS)
-        return await client.query_all(query, limit)
-    return await client.query(query)
+    if fetch_all and (limit < 1 or limit > MAX_QUERY_ROWS):
+        raise ToolError("invalid: limit must be between 1 and %d" % MAX_QUERY_ROWS)
+    target = _output_target(output_path, overwrite) if output_path is not None else None
+    if target is not None and fetch_all and not is_count_query(query):
+        return await _write_query_pages(client, query, limit, target, overwrite)
+    result = await client.query_all(query, limit) if fetch_all else await client.query(query)
+    if target is None:
+        return result
+    return await _write_output(target, json.dumps(result).encode("utf-8"), overwrite)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -362,8 +404,12 @@ async def qbo_list_reports() -> dict[str, Any]:
 
 @mcp.tool(annotations=READ_ONLY)
 @_tag_errors
-async def qbo_report(report: str, params: dict[str, str] | None = None, output: str = "flat") -> dict[str, Any]:
+async def qbo_report(report: str, params: dict[str, str] | None = None, output: str = "flat",
+                     output_path: str | None = None, overwrite: bool = False) -> dict[str, Any]:
     """Run a QuickBooks report, e.g. ProfitAndLoss, BalanceSheet, TrialBalance, GeneralLedger, AgedReceivables.
+
+    Send large reports (TransactionList, GeneralLedger, long date ranges) to a file with output_path and read it
+    with a tool such as jq.
 
     Args:
         report: Report name (see qbo_list_reports).
@@ -371,20 +417,31 @@ async def qbo_report(report: str, params: dict[str, str] | None = None, output: 
             "accounting_method": "Accrual"}.
         output: "flat" (default) returns ordered rows with a nesting depth and kind (header/data/summary);
             "raw" returns QuickBooks' nested JSON unchanged.
+        output_path: Absolute path of a JSON file to write the report to instead of returning it; its directory
+            must exist. The tool returns the path and the file size (and a note if the report was kept raw).
+        overwrite: Replace output_path if it already exists.
     """
     if output not in ("flat", "raw"):
         raise ToolError("invalid: output must be 'flat' or 'raw'")
     name = validate_report_name(report)
+    target = _output_target(output_path, overwrite) if output_path is not None else None
     raw = await _get_runtime().client.report(name, params)
     if output == "raw":
-        return raw
-    try:
-        return flatten_report(raw)
-    except ReportError as e:
-        return {"note": "Could not flatten this report (%s); returning raw output" % e, "raw": raw}
+        result = raw
+    else:
+        try:
+            result = flatten_report(raw)
+        except ReportError as e:
+            result = {"note": "Could not flatten this report (%s); returning raw output" % e, "raw": raw}
+    if target is None:
+        return result
+    written = await _write_output(target, json.dumps(result).encode("utf-8"), overwrite)
+    if "note" in result:
+        written["note"] = result["note"]
+    return written
 
 
-@mcp.tool(annotations=LOCAL_WRITE)
+@mcp.tool(annotations=READ_ONLY)
 @_tag_errors
 async def qbo_download_pdf(entity: str, id: str, output_path: str, overwrite: bool = False) -> dict[str, Any]:
     """Save the PDF of an invoice, estimate or sales receipt to a local file.
@@ -400,7 +457,7 @@ async def qbo_download_pdf(entity: str, id: str, output_path: str, overwrite: bo
     return await _write_output(target, await _get_runtime().client.pdf(spec, id), overwrite)
 
 
-@mcp.tool(annotations=LOCAL_WRITE)
+@mcp.tool(annotations=READ_ONLY)
 @_tag_errors
 async def qbo_download_attachment(attachable_id: str, output_path: str, overwrite: bool = False) -> dict[str, Any]:
     """Save the file behind an Attachable record to a local file.

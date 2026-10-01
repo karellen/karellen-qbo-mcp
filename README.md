@@ -181,10 +181,10 @@ Each environment keeps its own `client.json`, `tokens.json`, `audit.jsonl` and `
 | `qbo_auth_login` | auth | Browser sign-in (sandbox) |
 | `qbo_list_entities` | read | Supported entities and their operations |
 | `qbo_get` | read | One record by Id, with its SyncToken |
-| `qbo_query` | read | Query language, optional automatic paging |
+| `qbo_query` | read | Query language, optional automatic paging, optionally into a local JSON file |
 | `qbo_cdc` | read | Records changed since a time (30-day lookback) |
 | `qbo_list_reports` | read | Common report names and parameters |
-| `qbo_report` | read | Run a report, flattened or raw |
+| `qbo_report` | read | Run a report, flattened or raw, optionally into a local JSON file |
 | `qbo_download_pdf` | local write | Save an invoice/estimate/sales receipt PDF to a local file |
 | `qbo_download_attachment` | local write | Save an attachment's file to a local file |
 | `qbo_create` | write | Create a record |
@@ -197,6 +197,8 @@ Each environment keeps its own `client.json`, `tokens.json`, `audit.jsonl` and `
 | `qbo_upload_attachment` | write | Upload a file, optionally linked to records |
 
 Every write tool except `qbo_send` and `qbo_upload_attachment` accepts `dry_run=True`.
+
+`qbo_query` and `qbo_report` take an optional `output_path` (and `overwrite`): the result is written to that owner-only JSON file instead of being returned, and the tool returns the path, the file size and, for `fetch_all` queries, the row count. Use it for large results (wide entities such as `Attachable`, `TransactionList` or `GeneralLedger` reports) and read the file with a tool such as `jq`; a result returned inline passes through the MCP connection and the client's context whole. `fetch_all` pages are written as they arrive, so the server holds one page at a time.
 
 ## Supervision
 
@@ -222,9 +224,11 @@ Every write tool except `qbo_send` and `qbo_upload_attachment` accepts `dry_run=
   }
   ```
 
-  The two download tools are marked as local writes rather than reads: they create files
-  (owner-readable only, never inside the server's own configuration directory) and with
-  `overwrite=True` replace them, so leave them out of the allow list to confirm each one.
+  Read and write here are with respect to QuickBooks. The two download tools, and
+  `qbo_query`/`qbo_report` given an `output_path`, are reads that also create local
+  files (owner-readable only, never inside the server's own configuration directory)
+  and with `overwrite=True` replace them. Leave the download tools out of the allow list
+  to confirm each file they write.
 - **Previews.** `dry_run=True` shows what would be sent; for updates it fetches the
   record and shows each changed field, whether your SyncToken is current, and which fields
   a full (non-sparse) update would clear.

@@ -16,6 +16,7 @@
 import asyncio
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -238,6 +239,110 @@ class ReadToolTests(ServerTestBase):
             with self.assertRaises(ToolError):
                 run(server.qbo_query("SELECT * FROM Customer", fetch_all=True, limit=limit))
 
+    def test_query_fetch_all_to_file_streams_pages(self):
+        page1 = [{"Id": str(i), "FileName": "r%d.pdf" % i} for i in range(1000)]
+        page2 = [{"Id": "1000", "FileName": "a.pdf"}, {"Id": "1001", "FileName": "b.pdf"}]
+        self.respond(json_response(200, {"QueryResponse": {"Attachable": page1}}),
+                     json_response(200, {"QueryResponse": {"Attachable": page2}}))
+        target = self.tmp / "attachables.json"
+        result = run(server.qbo_query("SELECT * FROM Attachable", fetch_all=True, limit=5000, output_path=str(target)))
+        self.assertEqual(result, {"path": str(target), "bytes": target.stat().st_size, "entity": "Attachable",
+                                  "count": 1002, "truncated": False})
+        self.assertEqual(json.loads(target.read_text()), {"entity": "Attachable", "rows": page1 + page2,
+                                                          "count": 1002, "truncated": False})
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
+
+    def test_query_fetch_all_to_file_empty_and_truncated(self):
+        self.respond(json_response(200, {"QueryResponse": {}}),
+                     json_response(200, {"QueryResponse": {"Bill": [{"Id": "1"}, {"Id": "2"}]}}),
+                     json_response(200, {"QueryResponse": {"Bill": [{"Id": "3"}]}}))
+        empty, cut = self.tmp / "empty.json", self.tmp / "cut.json"
+        run(server.qbo_query("SELECT * FROM Bill", fetch_all=True, output_path=str(empty)))
+        self.assertEqual(json.loads(empty.read_text()), {"entity": None, "rows": [], "count": 0, "truncated": False})
+        result = run(server.qbo_query("SELECT * FROM Bill", fetch_all=True, limit=2, output_path=str(cut)))
+        self.assertTrue(result["truncated"])
+        self.assertEqual(json.loads(cut.read_text())["rows"], [{"Id": "1"}, {"Id": "2"}])
+
+    def test_query_single_call_and_count_to_file(self):
+        single = {"Customer": [{"Id": "1"}, {"Id": "2"}], "maxResults": 2}
+        self.respond(json_response(200, {"QueryResponse": single}),
+                     json_response(200, {"QueryResponse": {"totalCount": 57}}))
+        first, count = self.tmp / "first.json", self.tmp / "count.json"
+        self.assertEqual(run(server.qbo_query("SELECT * FROM Customer", output_path=str(first))),
+                         {"path": str(first), "bytes": first.stat().st_size})
+        self.assertEqual(json.loads(first.read_text()), single)
+        run(server.qbo_query("SELECT COUNT(*) FROM Customer", fetch_all=True, output_path=str(count)))
+        self.assertEqual(json.loads(count.read_text()), {"totalCount": 57})
+
+    def test_query_to_file_path_checks_happen_before_querying(self):
+        self.respond()
+        existing = self.tmp / "existing.json"
+        existing.write_text("theirs")
+        for path in ("relative.json", str(existing), str(self.tmp / "missing-dir" / "q.json"),
+                     str(self.settings.tokens_path)):
+            with self.assertRaises(ToolError) as ctx:
+                run(server.qbo_query("SELECT * FROM Bill", fetch_all=True, output_path=path))
+            self.assertTrue(str(ctx.exception).startswith("invalid:"), str(ctx.exception))
+        self.assertEqual(self.recorder.requests, [])
+        self.assertEqual(existing.read_text(), "theirs")
+
+    def test_query_to_file_overwrite(self):
+        self.respond(json_response(200, {"QueryResponse": {"Bill": [{"Id": "1"}, {"Id": "2"}]}}))
+        target = self.tmp / "bills.json"
+        target.write_text("old")
+        run(server.qbo_query("SELECT * FROM Bill", fetch_all=True, output_path=str(target), overwrite=True))
+        self.assertEqual(json.loads(target.read_text())["count"], 2)
+
+    def test_query_to_file_failure_leaves_nothing_behind(self):
+        fault = {"Fault": {"Error": [{"Message": "Invalid query", "code": "4000"}], "type": "ValidationFault"}}
+        self.respond(json_response(200, {"QueryResponse": {"Bill": [{"Id": str(i)} for i in range(1000)]}}),
+                     json_response(400, fault))
+        out = self.tmp / "out"
+        out.mkdir()
+        with self.assertRaises(ToolError) as ctx:
+            run(server.qbo_query("SELECT * FROM Bill", fetch_all=True, limit=5000, output_path=str(out / "b.json")))
+        self.assertTrue(str(ctx.exception).startswith("qbo:"), str(ctx.exception))
+        self.assertEqual(list(out.iterdir()), [])
+
+    def test_query_to_file_never_clobbers_a_file_created_meanwhile(self):
+        self.respond(json_response(200, {"QueryResponse": {"Bill": [{"Id": "1"}, {"Id": "2"}]}}),
+                     json_response(200, {"QueryResponse": {"Bill": [{"Id": "1"}, {"Id": "2"}]}}))
+        for fetch_all in (True, False):
+            target = self.tmp / ("bills-%s.json" % fetch_all)
+            target.write_text("theirs")
+            with patch.object(server, "_output_target", lambda path, overwrite: target):
+                with self.assertRaises(ToolError) as ctx:
+                    run(server.qbo_query("SELECT * FROM Bill", fetch_all=fetch_all, output_path=str(target)))
+            self.assertIn("already exists", str(ctx.exception))
+            self.assertEqual(target.read_text(), "theirs")
+
+    def test_query_to_file_passes_tool_output_validation(self):
+        self.respond(json_response(200, {"QueryResponse": {"Bill": [{"Id": "1"}, {"Id": "2"}]}}))
+        target = self.tmp / "bills.json"
+        result = run(server.mcp.call_tool("qbo_query", {"query": "SELECT * FROM Bill", "fetch_all": True,
+                                                        "output_path": str(target)}))
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.structured_content["count"], 2)
+
+    def test_report_to_file(self):
+        columns = [{"ColTitle": "", "ColType": "Account"}, {"ColTitle": "Debit", "ColType": "Money"}]
+        report = {"Header": {"ReportName": "TrialBalance"}, "Columns": {"Column": columns},
+                  "Rows": {"Row": [{"ColData": [{"value": "Checking", "id": "35"}, {"value": "100.00"}]},
+                                   {"ColData": [{"value": "Savings", "id": "36"}, {"value": "200.00"}]}]}}
+        self.respond(json_response(200, report), json_response(200, report), json_response(200, {"Weird": True}))
+        flat, raw, odd = self.tmp / "flat.json", self.tmp / "raw.json", self.tmp / "odd.json"
+        self.assertEqual(run(server.qbo_report("TrialBalance", output_path=str(flat))),
+                         {"path": str(flat), "bytes": flat.stat().st_size})
+        self.assertEqual([r["values"][0] for r in json.loads(flat.read_text())["rows"]], ["Checking", "Savings"])
+        run(server.qbo_report("TrialBalance", output="raw", output_path=str(raw)))
+        self.assertEqual(json.loads(raw.read_text()), report)
+        fallback = run(server.qbo_report("TrialBalance", output_path=str(odd)))
+        self.assertIn("Could not flatten", fallback["note"])
+        self.assertEqual(json.loads(odd.read_text())["raw"], {"Weird": True})
+        with self.assertRaises(ToolError):
+            run(server.qbo_report("TrialBalance", output_path=str(flat)))
+        self.assertEqual(len(self.recorder.requests), 3)
+
     def test_cdc_normalizes_entity_names(self):
         recorder = self.respond(json_response(200, CDC_RESPONSE))
         run(server.qbo_cdc(["invoice", "PAYMENT"], "2026-09-01T00:00:00Z"))
@@ -295,11 +400,10 @@ class ReadToolTests(ServerTestBase):
         run(server.qbo_download_attachment("100", str(target)))
         self.assertEqual(target.read_bytes(), b"data")
 
-    def test_download_tools_are_local_writes(self):
+    def test_tools_writing_local_files_are_still_quickbooks_reads(self):
         tools = {t.name: t for t in run(server.mcp.list_tools())}
-        for name in ("qbo_download_pdf", "qbo_download_attachment"):
-            self.assertFalse(tools[name].annotations.read_only_hint, name)
-            self.assertTrue(tools[name].annotations.destructive_hint, name)
+        for name in ("qbo_download_pdf", "qbo_download_attachment", "qbo_query", "qbo_report"):
+            self.assertTrue(tools[name].annotations.read_only_hint, name)
 
     def test_download_refuses_server_state_files(self):
         self.respond(signed_in=True)

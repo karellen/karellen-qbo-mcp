@@ -16,6 +16,7 @@
 """Owner-only file helpers for credentials, tokens and the audit log."""
 
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -24,42 +25,73 @@ def ensure_private_dir(path: Path):
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
 
 
-def write_private_file(path: Path, data: bytes, overwrite: bool = True):
-    """Atomically put `data` at `path`, readable by the owner only.
+class PrivateFile:
+    """An owner-only file written piece by piece under a temporary name, and put at `path` atomically on commit.
 
-    With overwrite=False an existing file is never replaced, not even one created while the data was being
-    written: FileExistsError is raised instead.
+    As a context manager it commits when the block completes and discards the temporary file when it fails. With
+    overwrite=False an existing file is never replaced, not even one created while the data was being written:
+    commit raises FileExistsError instead.
     """
-    ensure_private_dir(path.parent)
-    fd, tmp = tempfile.mkstemp(prefix=".%s." % path.name, suffix=".tmp", dir=path.parent)  # mode 0600
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        if overwrite:
-            os.replace(tmp, path)
-        else:
-            try:
-                os.link(tmp, path)  # atomic, and fails if path exists
-            except FileExistsError:
-                raise
-            except OSError:  # no hard links on this filesystem: create exclusively instead
-                _write_new_file(path, data)
-            os.unlink(tmp)
-    except BaseException:
+
+    def __init__(self, path: Path, overwrite: bool = True):
+        self.path = path
+        self.overwrite = overwrite
+        self.size = 0
+        ensure_private_dir(path.parent)
+        fd, self._tmp = tempfile.mkstemp(prefix=".%s." % path.name, suffix=".tmp", dir=path.parent)  # mode 0600
+        self._file = os.fdopen(fd, "wb")
+
+    def write(self, data: bytes):
+        self._file.write(data)
+        self.size += len(data)
+
+    def commit(self):
         try:
-            os.unlink(tmp)
+            self._file.flush()
+            os.fsync(self._file.fileno())
+            self._file.close()
+            if self.overwrite:
+                os.replace(self._tmp, self.path)
+            else:
+                try:
+                    os.link(self._tmp, self.path)  # atomic, and fails if path exists
+                except FileExistsError:
+                    raise
+                except OSError:  # no hard links on this filesystem: create exclusively instead
+                    _copy_to_new_file(self._tmp, self.path)
+                os.unlink(self._tmp)
+        except BaseException:
+            self.discard()
+            raise
+
+    def discard(self):
+        self._file.close()
+        try:
+            os.unlink(self._tmp)
         except FileNotFoundError:
             pass
-        raise
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self.commit()
+        else:
+            self.discard()
 
 
-def _write_new_file(path: Path, data: bytes):
+def write_private_file(path: Path, data: bytes, overwrite: bool = True):
+    """Atomically put `data` at `path`, readable by the owner only (see PrivateFile)."""
+    with PrivateFile(path, overwrite) as f:
+        f.write(data)
+
+
+def _copy_to_new_file(source: str, path: Path):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
+        with os.fdopen(fd, "wb") as f, open(source, "rb") as src:
+            shutil.copyfileobj(src, f)
             f.flush()
             os.fsync(f.fileno())
     except BaseException:

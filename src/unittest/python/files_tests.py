@@ -20,7 +20,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from karellen_qbo_mcp.files import write_private_file, append_private_line
+from karellen_qbo_mcp.files import PrivateFile, write_private_file, append_private_line
 
 
 class PrivateFileTests(unittest.TestCase):
@@ -84,6 +84,29 @@ class PrivateFileTests(unittest.TestCase):
                 with self.assertRaises(OSError):
                     write_private_file(self.dir / "other.json", b"x", overwrite=False)
         self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["tokens.json"])
+
+    def test_private_file_written_in_pieces_appears_only_on_commit(self):
+        with PrivateFile(self.path, overwrite=False) as f:
+            f.write(b"one,")
+            f.write(b"two")
+            self.assertFalse(self.path.exists())
+        self.assertEqual(f.size, 7)
+        self.assertEqual(self.path.read_bytes(), b"one,two")
+        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
+        with self.assertRaises(FileExistsError):
+            with PrivateFile(self.path, overwrite=False) as f:
+                f.write(b"three")
+        with PrivateFile(self.path) as f:
+            f.write(b"four")
+        self.assertEqual(self.path.read_bytes(), b"four")
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), ["tokens.json"])
+
+    def test_private_file_discarded_when_writing_fails(self):
+        with self.assertRaises(RuntimeError):
+            with PrivateFile(self.path) as f:
+                f.write(b"partial")
+                raise RuntimeError("source failed")
+        self.assertEqual(list(self.dir.iterdir()), [])
 
     def test_append_creates_private_file_and_adds_lines(self):
         append_private_line(self.path, "first\n")
