@@ -67,6 +67,11 @@ claude plugin marketplace add karellen/claude-plugins
 claude plugin install karellen-qbo-mcp@karellen-plugins
 ```
 
+The plugin asks for two settings when it is enabled, which you can change later in
+`/config`: the QuickBooks **environment** (`sandbox` or `production`, default `sandbox`) and
+**read-only mode** (default off). They set `QBO_MCP_ENVIRONMENT` and `QBO_MCP_READ_ONLY`
+for the plugin's server; restart Claude Code after changing them.
+
 From a local checkout:
 
 ```bash

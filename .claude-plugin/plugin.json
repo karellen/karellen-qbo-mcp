@@ -1,6 +1,6 @@
 {
   "name": "karellen-qbo-mcp",
-  "version": "0.0.1",
+  "version": "0.0.4",
   "description": "QuickBooks Online bookkeeping for Claude Code via MCP - reports, queries and full record management under your supervision, running locally",
   "author": {
     "name": "Karellen, Inc.",
@@ -9,5 +9,20 @@
   "homepage": "https://karellen.co",
   "repository": "https://github.com/karellen/karellen-qbo-mcp",
   "license": "Apache-2.0",
-  "keywords": ["quickbooks", "qbo", "intuit", "accounting", "bookkeeping", "mcp"]
+  "keywords": ["quickbooks", "qbo", "intuit", "accounting", "bookkeeping", "mcp"],
+  "userConfig": {
+    "environment": {
+      "type": "string",
+      "title": "QuickBooks environment",
+      "description": "Sandbox (development keys, test company) or production (your real books). Each has its own credentials and sign-in: karellen-qbo-mcp --environment <environment> auth login",
+      "options": ["sandbox", "production"],
+      "default": "sandbox"
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only mode",
+      "description": "Refuse every write to QuickBooks; reports, queries and dry runs still work",
+      "default": false
+    }
+  }
 }
