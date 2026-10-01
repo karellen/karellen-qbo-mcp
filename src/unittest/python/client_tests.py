@@ -330,6 +330,45 @@ class WriteTests(ClientTestBase):
         self.assertEqual(self.recorder.body_json(), {"Id": "9", "SyncToken": "2", "PrivateNote": "checked", "sparse": True})
         self.assertNotIn("sparse", data)
 
+    def test_sparse_update_fills_required_fields_from_current_record(self):
+        current = {"Id": "4", "SyncToken": "5", "VendorRef": {"value": "91"}, "PrivateNote": "old", "TotalAmt": 7.04}
+        client = self.client(json_response(200, {"Bill": current}), json_response(200, {"Bill": {"Id": "4"}}))
+        data = {"Id": "4", "SyncToken": "3", "PrivateNote": "new"}
+        run(client.update(get_entity("Bill"), data, True, "rid"))
+        self.assertEqual(self.request(0).method, "GET")
+        self.assertTrue(str(self.request(0).url).startswith(BASE + "bill/4?"))
+        # Only the missing required field is copied; the caller's SyncToken is kept, so a stale one still fails.
+        self.assertEqual(self.recorder.body_json(), {"Id": "4", "SyncToken": "3", "PrivateNote": "new",
+                                                     "VendorRef": {"value": "91"}, "sparse": True})
+        self.assertEqual(data, {"Id": "4", "SyncToken": "3", "PrivateNote": "new"})
+
+    def test_sparse_update_with_required_fields_does_not_read(self):
+        client = self.client(json_response(200, {"Transfer": {"Id": "7"}}))
+        data = {"Id": "7", "SyncToken": "1", "FromAccountRef": {"value": "35"}, "ToAccountRef": {"value": "36"},
+                "Amount": 10.0, "PrivateNote": "moved"}
+        run(client.update(get_entity("Transfer"), data, True, "rid"))
+        self.assertEqual(len(self.recorder.requests), 1)
+        self.assertEqual(self.recorder.body_json(), dict(data, sparse=True))
+
+    def test_sparse_update_of_term_copies_the_fields_the_record_has(self):
+        standard = {"Id": "3", "SyncToken": "0", "Name": "Net 30", "Type": "STANDARD", "DueDays": 30, "Active": True}
+        date_driven = {"Id": "8", "SyncToken": "2", "Name": "15th", "Type": "DATE_DRIVEN", "DayOfMonthDue": 15,
+                       "Active": True}
+        client = self.client(json_response(200, {"Term": standard}), json_response(200, {"Term": standard}),
+                             json_response(200, {"Term": date_driven}), json_response(200, {"Term": date_driven}))
+        run(client.update(get_entity("Term"), {"Id": "3", "SyncToken": "0", "Active": False}, True, "rid"))
+        self.assertEqual(self.recorder.body_json(1), {"Id": "3", "SyncToken": "0", "Active": False, "Name": "Net 30",
+                                                      "Type": "STANDARD", "DueDays": 30, "sparse": True})
+        run(client.update(get_entity("Term"), {"Id": "8", "SyncToken": "2", "Name": "Mid-month"}, True, "rid"))
+        self.assertEqual(self.recorder.body_json(3), {"Id": "8", "SyncToken": "2", "Name": "Mid-month",
+                                                      "Type": "DATE_DRIVEN", "DayOfMonthDue": 15, "sparse": True})
+
+    def test_full_update_does_not_fill(self):
+        client = self.client(json_response(200, {"Bill": {"Id": "4"}}))
+        run(client.update(get_entity("Bill"), {"Id": "4", "SyncToken": "3", "PrivateNote": "new"}, False, "rid"))
+        self.assertEqual(len(self.recorder.requests), 1)
+        self.assertNotIn("VendorRef", self.recorder.body_json())
+
     def test_full_update_has_no_sparse_flag(self):
         client = self.client(json_response(200, {"Invoice": {"Id": "9"}}))
         run(client.update(get_entity("Invoice"), {"Id": "9", "SyncToken": "2"}, False, "rid"))
@@ -364,6 +403,13 @@ class WriteTests(ClientTestBase):
         client = self.client(json_response(200, {"Vendor": {"Id": "3", "Active": False}}))
         run(client.deactivate(get_entity("Vendor"), "3", "1", "rid"))
         self.assertEqual(self.recorder.body_json(), {"Id": "3", "SyncToken": "1", "sparse": True, "Active": False})
+
+    def test_deactivate_fills_required_name(self):
+        client = self.client(json_response(200, {"Class": {"Id": "5", "SyncToken": "1", "Name": "Consulting"}}),
+                             json_response(200, {"Class": {"Id": "5", "Active": False}}))
+        run(client.deactivate(get_entity("Class"), "5", "1", "rid"))
+        self.assertEqual(self.recorder.body_json(), {"Id": "5", "SyncToken": "1", "Active": False, "Name": "Consulting",
+                                                     "sparse": True})
 
     def test_void_invoice_uses_operation_void(self):
         client = self.client(json_response(200, {"Invoice": {"Id": "9"}}))

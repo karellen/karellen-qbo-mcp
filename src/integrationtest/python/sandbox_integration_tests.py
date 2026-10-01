@@ -98,6 +98,11 @@ class SandboxTests(unittest.IsolatedAsyncioTestCase):
             source.write_text("receipt for %s" % self.tag)
             attachable = await server.qbo_upload_attachment(str(source), [{"entity": "Invoice", "id": invoice["Id"]}],
                                                             note=self.tag)
+            # The presigned download URL QuickBooks returns is left out unless asked for.
+            self.assertNotIn("TempDownloadUri", attachable)
+            full = await server.qbo_get("Attachable", attachable["Id"], full=True)
+            self.assertTrue(full["TempDownloadUri"].startswith("https://"))
+            self.assertNotIn("TempDownloadUri", await server.qbo_get("Attachable", attachable["Id"]))
             copy = Path(tmp) / "copy.txt"
             await server.qbo_download_attachment(attachable["Id"], str(copy))
             self.assertEqual(copy.read_text(), source.read_text())
@@ -127,6 +132,31 @@ class SandboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all("fault" not in r for r in results), results)
         vendor = results[1]["result"]
         await server.qbo_deactivate("Vendor", vendor["Id"], vendor["SyncToken"])
+
+    async def test_sparse_updates_fill_required_fields(self):
+        # QuickBooks rejects these sparse updates without VendorRef, Name or the term's due-day field;
+        # the server copies them from the current record.
+        expense = await self.first("SELECT * FROM Account WHERE AccountType = 'Expense' MAXRESULTS 1")
+        vendor = await self.first("SELECT * FROM Vendor WHERE Active = true MAXRESULTS 1")
+        bill = await server.qbo_create("Bill", {"VendorRef": {"value": vendor["Id"]}, "TxnDate": self.today, "Line": [
+            {"Amount": 7.04, "DetailType": "AccountBasedExpenseLineDetail",
+             "AccountBasedExpenseLineDetail": {"AccountRef": {"value": expense["Id"]}}}]})
+        bill = await server.qbo_update("Bill", {"Id": bill["Id"], "SyncToken": bill["SyncToken"], "PrivateNote": self.tag})
+        self.assertEqual(bill["PrivateNote"], self.tag)
+        self.assertEqual(bill["VendorRef"]["value"], vendor["Id"])
+        results = await server.qbo_batch([{"operation": "update", "entity": "Bill", "data": {
+            "Id": bill["Id"], "SyncToken": bill["SyncToken"], "PrivateNote": self.tag + " batch"}}])
+        self.assertNotIn("fault", results[0], results)
+        bill = results[0]["result"]
+        await server.qbo_delete("Bill", bill["Id"], bill["SyncToken"])
+
+        cls = await server.qbo_create("Class", {"Name": "%s class" % self.tag})
+        self.assertFalse((await server.qbo_deactivate("Class", cls["Id"], cls["SyncToken"]))["Active"])
+        term = await server.qbo_create("Term", {"Name": "%s term" % self.tag, "Type": "DATE_DRIVEN", "DayOfMonthDue": 15})
+        term = await server.qbo_update("Term", {"Id": term["Id"], "SyncToken": term["SyncToken"],
+                                                "Name": "%s mid-month" % self.tag})
+        self.assertEqual(term["DayOfMonthDue"], 15)
+        self.assertFalse((await server.qbo_deactivate("Term", term["Id"], term["SyncToken"]))["Active"])
 
     async def test_reports_flatten(self):
         year_start = datetime.date.today().replace(month=1, day=1).isoformat()

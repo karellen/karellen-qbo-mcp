@@ -1,6 +1,6 @@
 {
   "name": "karellen-qbo-mcp",
-  "version": "0.0.5",
+  "version": "0.0.6",
   "description": "QuickBooks Online bookkeeping for Claude Code via MCP - reports, queries and full record management under your supervision, running locally",
   "author": {
     "name": "Karellen, Inc.",

@@ -63,6 +63,21 @@ class TagErrorsTests(unittest.TestCase):
         self.assertIn("in fail", message)
 
 
+ATTACHABLES = [
+    {"Id": "100", "FileName": "r.pdf", "FileAccessUri": "/v3/company/1/download/100",
+     "TempDownloadUri": "https://intuit-qbo-prod.s3.amazonaws.com/r.pdf?X-Amz-Signature=abc"},
+    {"Id": "101", "FileName": "r.png", "FileAccessUri": "/v3/company/1/download/101",
+     "TempDownloadUri": "https://intuit-qbo-prod.s3.amazonaws.com/r.png?X-Amz-Signature=def",
+     "ThumbnailFileAccessUri": "/v3/company/1/attachable-thumbnail/101",
+     "ThumbnailTempDownloadUri": "https://intuit-qbo-prod.s3.amazonaws.com/t.png?X-Amz-Signature=ghi"},
+]
+TEMPORARY_URLS = ("TempDownloadUri", "ThumbnailTempDownloadUri")
+
+
+def without_temporary_urls(record):
+    return {k: v for k, v in record.items() if k not in TEMPORARY_URLS}
+
+
 class ServerTestBase(unittest.TestCase):
     read_only = False
 
@@ -527,6 +542,29 @@ class WriteToolTests(ServerTestBase):
             {"bId": "2", "fault": {"Error": [{"Message": "Stale"}], "type": "ValidationFault"}},
         ])
 
+    def test_batch_fills_sparse_requirements(self):
+        bill = {"Id": "4", "SyncToken": "5", "VendorRef": {"value": "91"}}
+        recorder = self.respond(json_response(200, {"Bill": bill}), json_response(200, {"BatchItemResponse": [
+            {"bId": "1", "Bill": {"Id": "4"}}, {"bId": "2", "Bill": {"Id": "6"}}, {"bId": "3", "Invoice": {"Id": "9"}}]}))
+        run(server.qbo_batch([
+            {"operation": "update", "entity": "Bill", "data": {"Id": "4", "SyncToken": "3", "PrivateNote": "a"}},
+            {"operation": "update", "entity": "Bill", "data": {"Id": "6", "SyncToken": "0", "PrivateNote": "b"},
+             "sparse": False},
+            {"operation": "update", "entity": "Invoice", "data": {"Id": "9", "SyncToken": "1", "PrivateNote": "c"}},
+        ]))
+        self.assertEqual(len(recorder.requests), 2)  # one read: the full update and the Invoice need nothing
+        items = recorder.body_json()["BatchItemRequest"]
+        self.assertEqual(items[0]["Bill"], {"Id": "4", "SyncToken": "3", "PrivateNote": "a", "VendorRef": {"value": "91"},
+                                            "sparse": True})
+        self.assertEqual(items[1]["Bill"], {"Id": "6", "SyncToken": "0", "PrivateNote": "b"})
+        self.assertEqual(items[2]["Invoice"], {"Id": "9", "SyncToken": "1", "PrivateNote": "c", "sparse": True})
+        self.assertEqual(self.audit()[0]["request"][0]["Bill"]["VendorRef"], {"value": "91"})
+
+    def test_batch_dry_run_does_not_fill(self):
+        dry = run(server.qbo_batch([{"operation": "update", "entity": "Bill", "data": {"Id": "4", "SyncToken": "3"}},
+                                    {"query": "SELECT * FROM Bill"}], dry_run=True))
+        self.assertEqual(dry[0]["Bill"], {"Id": "4", "SyncToken": "3", "sparse": True})
+
     def test_batch_validation_and_dry_run(self):
         with self.assertRaises(ToolError):
             run(server.qbo_batch([{"operation": "void", "entity": "Invoice", "data": {}}]))
@@ -566,6 +604,83 @@ class WriteToolTests(ServerTestBase):
                 run(server.qbo_upload_attachment(str(f)))
 
 
+class TemporaryUrlTests(ServerTestBase):
+    """Presigned attachment URLs are left out of results unless the caller asks for full=True."""
+
+    def test_get(self):
+        self.respond(json_response(200, {"Attachable": ATTACHABLES[1]}), json_response(200, {"Attachable": ATTACHABLES[1]}))
+        self.assertEqual(run(server.qbo_get("Attachable", "101")), without_temporary_urls(ATTACHABLES[1]))
+        self.assertEqual(run(server.qbo_get("Attachable", "101", full=True)), ATTACHABLES[1])
+
+    def test_query_inline(self):
+        page = {"QueryResponse": {"Attachable": ATTACHABLES}}
+        self.respond(json_response(200, page), json_response(200, page), json_response(200, page))
+        stripped = [without_temporary_urls(a) for a in ATTACHABLES]
+        self.assertEqual(run(server.qbo_query("SELECT * FROM Attachable"))["Attachable"], stripped)
+        self.assertEqual(run(server.qbo_query("SELECT * FROM Attachable", fetch_all=True))["rows"], stripped)
+        self.assertEqual(run(server.qbo_query("SELECT * FROM Attachable", full=True))["Attachable"], ATTACHABLES)
+
+    def test_query_to_file(self):
+        page = {"QueryResponse": {"Attachable": ATTACHABLES}}
+        self.respond(*(json_response(200, page) for _ in range(4)))
+        stripped = [without_temporary_urls(a) for a in ATTACHABLES]
+        single, paged = self.tmp / "single.json", self.tmp / "paged.json"
+        full_single, full_paged = self.tmp / "full-single.json", self.tmp / "full-paged.json"
+        run(server.qbo_query("SELECT * FROM Attachable", output_path=str(single)))
+        run(server.qbo_query("SELECT * FROM Attachable", fetch_all=True, output_path=str(paged)))
+        run(server.qbo_query("SELECT * FROM Attachable", output_path=str(full_single), full=True))
+        run(server.qbo_query("SELECT * FROM Attachable", fetch_all=True, output_path=str(full_paged), full=True))
+        self.assertEqual(json.loads(single.read_text())["Attachable"], stripped)
+        self.assertEqual(json.loads(paged.read_text())["rows"], stripped)
+        self.assertEqual(json.loads(full_single.read_text())["Attachable"], ATTACHABLES)
+        self.assertEqual(json.loads(full_paged.read_text())["rows"], ATTACHABLES)
+
+    def test_cdc(self):
+        cdc = {"CDCResponse": [{"QueryResponse": [{"Attachable": ATTACHABLES}, {"Bill": [{"Id": "1"}, {"Id": "2"}]}]}]}
+        self.respond(json_response(200, cdc), json_response(200, cdc))
+        result = run(server.qbo_cdc(["Attachable", "Bill"], "2026-09-01T00:00:00Z"))
+        self.assertEqual(result[0]["QueryResponse"][0]["Attachable"], [without_temporary_urls(a) for a in ATTACHABLES])
+        self.assertEqual(result[0]["QueryResponse"][1]["Bill"], [{"Id": "1"}, {"Id": "2"}])
+        full = run(server.qbo_cdc(["Attachable", "Bill"], "2026-09-01T00:00:00Z", full=True))
+        self.assertEqual(full[0]["QueryResponse"][0]["Attachable"], ATTACHABLES)
+
+    def test_create_and_update(self):
+        self.respond(*(json_response(200, {"Attachable": ATTACHABLES[0]}) for _ in range(4)))
+        data = {"FileName": "r.pdf", "Note": "receipt"}
+        update = {"Id": "100", "SyncToken": "0", "Note": "receipt"}
+        self.assertEqual(run(server.qbo_create("Attachable", data)), without_temporary_urls(ATTACHABLES[0]))
+        self.assertEqual(run(server.qbo_create("Attachable", data, full=True)), ATTACHABLES[0])
+        self.assertEqual(run(server.qbo_update("Attachable", update)), without_temporary_urls(ATTACHABLES[0]))
+        self.assertEqual(run(server.qbo_update("Attachable", update, full=True)), ATTACHABLES[0])
+
+    def test_batch(self):
+        response = {"BatchItemResponse": [{"bId": "1", "QueryResponse": {"Attachable": ATTACHABLES}},
+                                          {"bId": "2", "Attachable": ATTACHABLES[1]}]}
+        self.respond(*(json_response(200, response) for _ in range(3)))
+        operations = [{"query": "SELECT * FROM Attachable"},
+                      {"operation": "update", "entity": "Attachable", "data": {"Id": "101", "SyncToken": "0"}}]
+        result = run(server.qbo_batch(operations))
+        self.assertEqual(result[0]["result"]["Attachable"], [without_temporary_urls(a) for a in ATTACHABLES])
+        self.assertEqual(result[1]["result"], without_temporary_urls(ATTACHABLES[1]))
+        queries_only = run(server.qbo_batch([operations[0]]))
+        self.assertNotIn("TempDownloadUri", json.dumps(queries_only))
+        self.assertEqual(run(server.qbo_batch(operations, full=True))[1]["result"], ATTACHABLES[1])
+
+    def test_upload(self):
+        receipt = self.tmp / "r.png"
+        receipt.write_bytes(b"png")
+        response = {"AttachableResponse": [{"Attachable": ATTACHABLES[1]}]}
+        self.respond(json_response(200, response), json_response(200, response))
+        self.assertEqual(run(server.qbo_upload_attachment(str(receipt), [{"entity": "Bill", "id": "1"}])),
+                         without_temporary_urls(ATTACHABLES[1]))
+        self.assertEqual(run(server.qbo_upload_attachment(str(receipt), full=True)), ATTACHABLES[1])
+
+    def test_delete_preview(self):
+        self.respond(json_response(200, {"Attachable": ATTACHABLES[1]}))
+        preview = run(server.qbo_delete("Attachable", "101", "0", dry_run=True))
+        self.assertEqual(preview["record"], without_temporary_urls(ATTACHABLES[1]))
+
+
 class ReadOnlyModeTests(ServerTestBase):
     read_only = True
 
@@ -575,11 +690,14 @@ class ReadOnlyModeTests(ServerTestBase):
         receipt.write_bytes(b"x")
         for call in (server.qbo_create("Customer", {"DisplayName": "A"}),
                      server.qbo_update("Customer", {"Id": "1", "SyncToken": "0"}),
+                     server.qbo_update("Bill", {"Id": "1", "SyncToken": "0"}),
                      server.qbo_delete("Invoice", "1", "0"),
                      server.qbo_deactivate("Customer", "1", "0"),
+                     server.qbo_deactivate("Class", "1", "0"),
                      server.qbo_void("Invoice", "1", "0"),
                      server.qbo_send("Invoice", "1"),
                      server.qbo_batch([{"operation": "create", "entity": "Vendor", "data": {}}]),
+                     server.qbo_batch([{"operation": "update", "entity": "Bill", "data": {"Id": "1", "SyncToken": "0"}}]),
                      server.qbo_upload_attachment(str(receipt))):
             with self.assertRaises(ToolError) as ctx:
                 run(call)

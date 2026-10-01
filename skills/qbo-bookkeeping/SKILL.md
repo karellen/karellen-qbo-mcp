@@ -27,9 +27,8 @@ filings. Work like a careful bookkeeper who asks before posting.
   `SELECT Id, DisplayName FROM Vendor WHERE DisplayName LIKE '%Acme%'`.
 - Query language limits: one entity per query, no joins, no `OR`, only some fields
   are filterable, at most 1000 rows per call (`fetch_all=True` pages for you).
-- Never pull large results inline. For `fetch_all`, wide entities (`Attachable` rows
-  carry long temporary download URLs) and detail reports (`TransactionList`,
-  `GeneralLedger`), pass `output_path` to `qbo_query`/`qbo_report` and read the file
+- Never pull large results inline. For `fetch_all`, wide entities and detail reports
+  (`TransactionList`, `GeneralLedger`), pass `output_path` to `qbo_query`/`qbo_report` and read the file
   with `jq`. Select only the fields you need, and run `SELECT COUNT(*)` first when
   unsure of the size.
 - Check for duplicates before creating: search by DocNumber, amount and date, or by
@@ -45,7 +44,8 @@ filings. Work like a careful bookkeeper who asks before posting.
   the lines. Journal entries must balance (total debits = total credits).
 - Use `dry_run=True` for updates: the preview shows each field's current and proposed
   value, whether the SyncToken is current, and for full updates which fields would be
-  cleared. Prefer sparse updates (the default).
+  cleared. Prefer sparse updates (the default). Fields QuickBooks insists on even in a
+  sparse update (e.g. a Bill's VendorRef) are copied from the record when you omit them.
 - Line arrays are replaced whole on update: send every line you want to keep.
 - Post only after the user agrees. The Claude Code permission prompt for the write
   tool is the final check; do not work around a denial.

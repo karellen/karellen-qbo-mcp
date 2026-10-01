@@ -28,12 +28,17 @@ your machine, and the only services it talks to are Intuit's.
   flattened into ordered rows or as QuickBooks' raw JSON
 - **Queries**: the QuickBooks query language with automatic paging, single-record reads,
   change data capture
-- **Full record management**: create and update (sparse or full) on 30+ entities;
+- **Full record management**: create and update (sparse or full) on 30+ entities
+  (fields QuickBooks requires even in a sparse update, such as a bill's vendor, are
+  copied from the current record when omitted);
   delete transactions; void invoices, payments, sales receipts and bill payments;
   deactivate name-list records; email invoices, estimates and purchase orders; batches
   of up to 30 operations
 - **Attachments and PDFs**: upload receipts and documents linked to records, download
-  attachments and invoice/estimate/sales receipt PDFs
+  attachments and invoice/estimate/sales receipt PDFs. Results leave out the presigned
+  download URLs QuickBooks puts in attachment records (`TempDownloadUri`), which are
+  temporary credentials, kilobytes long each, unless the tool is given `full=True`;
+  `qbo_download_attachment` fetches a fresh one when it needs it
 - **Supervision**: read and write tools are separate (and annotated as such), so Claude
   Code can allow reads and ask before every write; `dry_run` previews with field-level
   diffs; a read-only mode; a local audit log of every write and an error log of every
