@@ -40,6 +40,9 @@ class EntitySpec:
     void_style: str | None = None
     sendable: bool = False
     pdf: bool = False
+    # Fields QuickBooks rejects a sparse update without (verified in the sandbox); updates copy the record's
+    # current values of whichever of them it has.
+    sparse_requires: tuple[str, ...] = ()
 
     @property
     def path(self) -> str:
@@ -66,14 +69,15 @@ def _txn(name, **kwargs):
 
 _ENTITIES = [
     _list("Account"),
-    _list("Class"),
+    _list("Class", sparse_requires=("Name",)),
     _list("CompanyCurrency"),
     _list("Customer"),
-    _list("Department"),
+    _list("Department", sparse_requires=("Name",)),
     _list("Employee"),
     _list("Item"),
     _list("PaymentMethod"),
-    _list("Term"),
+    # Standard terms need DueDays, date-driven ones DayOfMonthDue.
+    _list("Term", sparse_requires=("Name", "Type", "DueDays", "DayOfMonthDue")),
     _list("Vendor"),
     EntitySpec("TaxAgency", "list"),
     EntitySpec("Budget", "reference"),
@@ -83,22 +87,22 @@ _ENTITIES = [
     EntitySpec("CompanyInfo", "singleton"),
     EntitySpec("Preferences", "singleton"),
     _txn("Attachable"),
-    _txn("Bill"),
+    _txn("Bill", sparse_requires=("VendorRef",)),
     _txn("BillPayment", void_style=VOID_INCLUDE),
     _txn("CreditCardPayment"),
     _txn("CreditMemo"),
-    _txn("Deposit"),
+    _txn("Deposit", sparse_requires=("DepositToAccountRef",)),
     _txn("Estimate", sendable=True, pdf=True),
     _txn("Invoice", void_style=VOID_OPERATION, sendable=True, pdf=True),
     _txn("JournalEntry"),
     _txn("Payment", void_style=VOID_INCLUDE),
-    _txn("Purchase"),
+    _txn("Purchase", sparse_requires=("PaymentType",)),
     _txn("PurchaseOrder", sendable=True),
     _txn("RefundReceipt"),
     _txn("SalesReceipt", void_style=VOID_INCLUDE, pdf=True),
     _txn("TimeActivity"),
-    _txn("Transfer"),
-    _txn("VendorCredit"),
+    _txn("Transfer", sparse_requires=("FromAccountRef", "ToAccountRef", "Amount")),
+    _txn("VendorCredit", sparse_requires=("VendorRef",)),
 ]
 
 ENTITIES = {spec.name.lower(): spec for spec in _ENTITIES}

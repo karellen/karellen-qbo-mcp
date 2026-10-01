@@ -376,8 +376,21 @@ class QboClient:
             raise QboError("Updating %s requires its Id" % spec.name)
         body = dict(data)
         if sparse:
+            body.update(await self.sparse_fill(spec, data))
             body["sparse"] = True
         return await self._post(spec.path, spec.name, json_body=body, request_id=request_id)
+
+    async def sparse_fill(self, spec: EntitySpec, data: dict) -> dict:
+        """The fields a sparse update of `data` needs but lacks (spec.sparse_requires), at the record's current values.
+
+        Reads the record only when something is missing. The update keeps the caller's SyncToken, so if the
+        record changed since then QuickBooks still rejects it as stale.
+        """
+        missing = [f for f in spec.sparse_requires if f not in data]
+        if not missing:
+            return {}
+        current = await self.read(spec, data.get("Id"))
+        return {f: current[f] for f in missing if f in current}
 
     async def delete(self, spec: EntitySpec, entity_id: str, sync_token: str, request_id: str) -> dict:
         require_capability(spec, "delete")

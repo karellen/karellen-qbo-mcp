@@ -62,6 +62,11 @@ READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=True)
 ADDITIVE = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=True)
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=True)
 
+# Attachable fields holding presigned download URLs: temporary credentials, up to ~6 KB each and so most of an
+# Attachable row. Results leave them out unless the caller passes full=True; qbo_download_attachment asks
+# QuickBooks for a fresh URL itself.
+TEMPORARY_URL_FIELDS = ("TempDownloadUri", "ThumbnailTempDownloadUri")
+
 
 class Runtime:
     def __init__(self, settings: Settings):
@@ -168,6 +173,26 @@ def _summarize(result) -> Any:
     return {k: result[k] for k in keys if k in result}
 
 
+def _drop_temporary_urls(value):
+    if isinstance(value, dict):
+        for key in TEMPORARY_URL_FIELDS:
+            value.pop(key, None)
+        values = value.values()
+    elif isinstance(value, list):
+        values = value
+    else:
+        return
+    for item in values:
+        _drop_temporary_urls(item)
+
+
+def _shown(result, full: bool):
+    """A result as a tool returns it: without presigned attachment URLs (removed in place) unless `full`."""
+    if not full:
+        _drop_temporary_urls(result)
+    return result
+
+
 async def _perform(rt: Runtime, operation: str, entity: str | None, request, call):
     """Run one write with a fresh requestid and record it in the audit log either way.
 
@@ -196,7 +221,8 @@ async def _record_write(operation: str, entity: str, id: str, sync_token: str, d
     rt = _get_runtime()
     spec = require_capability(get_entity(entity), operation)
     if dry_run:
-        return {"dry_run": True, "operation": operation, "entity": spec.name, "record": await rt.client.read(spec, id)}
+        return {"dry_run": True, "operation": operation, "entity": spec.name,
+                "record": _shown(await rt.client.read(spec, id), False)}
     request = {"Id": id, "SyncToken": sync_token, **extra}
     method = getattr(rt.client, operation)
     return await _perform(rt, operation, spec.name, request, lambda rid: method(spec, id, sync_token, rid))
@@ -245,7 +271,8 @@ async def _write_output(target: Path, content: bytes, overwrite: bool) -> dict:
     return {"path": str(target), "bytes": len(content)}
 
 
-async def _write_query_pages(client: QboClient, query: str, limit: int, target: Path, overwrite: bool) -> dict:
+async def _write_query_pages(client: QboClient, query: str, limit: int, target: Path, overwrite: bool,
+                             full: bool) -> dict:
     """Write a fetch_all result to `target` page by page, so only one page is held in memory at a time.
 
     The file holds the same JSON object qbo_query would return, with "rows" first since the entity name, count
@@ -259,7 +286,7 @@ async def _write_query_pages(client: QboClient, query: str, limit: int, target: 
         async def on_page(rows):
             nonlocal separator
             if rows:
-                chunk = separator + b", ".join(json.dumps(row).encode("utf-8") for row in rows)
+                chunk = separator + b", ".join(json.dumps(row).encode("utf-8") for row in _shown(rows, full))
                 await anyio.to_thread.run_sync(file.write, chunk)
                 separator = b", "
 
@@ -320,21 +347,23 @@ async def qbo_list_entities() -> list[dict[str, Any]]:
 
 @mcp.tool(annotations=READ_ONLY)
 @_tag_errors
-async def qbo_get(entity: str, id: str | None = None) -> dict[str, Any]:
+async def qbo_get(entity: str, id: str | None = None, full: bool = False) -> dict[str, Any]:
     """Read one record by Id, including its current SyncToken.
 
     Args:
         entity: Entity name, e.g. "Invoice", "Customer", "JournalEntry". CompanyInfo and Preferences need no id.
         id: The record's Id.
+        full: Keep attachments' presigned download URLs (TempDownloadUri), left out by default: they are
+            temporary credentials, kilobytes long each, and qbo_download_attachment does not need them.
     """
     spec = get_entity(entity)
-    return await _get_runtime().client.read(spec, id)
+    return _shown(await _get_runtime().client.read(spec, id), full)
 
 
 @mcp.tool(annotations=READ_ONLY)
 @_tag_errors
 async def qbo_query(query: str, fetch_all: bool = False, limit: int = 1000, output_path: str | None = None,
-                    overwrite: bool = False) -> dict[str, Any]:
+                    overwrite: bool = False, full: bool = False) -> dict[str, Any]:
     """Run a QuickBooks query (SQL-like, one entity per query).
 
     Examples: "SELECT * FROM Invoice WHERE Balance > '0' ORDERBY TxnDate DESC",
@@ -352,14 +381,16 @@ async def qbo_query(query: str, fetch_all: bool = False, limit: int = 1000, outp
             size and, for fetch_all, the entity, row count and truncation. fetch_all pages are written as they
             arrive.
         overwrite: Replace output_path if it already exists.
+        full: Keep attachments' presigned download URLs (TempDownloadUri), left out by default: they are
+            temporary credentials, kilobytes long each, and qbo_download_attachment does not need them.
     """
     client = _get_runtime().client
     if fetch_all and (limit < 1 or limit > MAX_QUERY_ROWS):
         raise ToolError("invalid: limit must be between 1 and %d" % MAX_QUERY_ROWS)
     target = _output_target(output_path, overwrite) if output_path is not None else None
     if target is not None and fetch_all and not is_count_query(query):
-        return await _write_query_pages(client, query, limit, target, overwrite)
-    result = await client.query_all(query, limit) if fetch_all else await client.query(query)
+        return await _write_query_pages(client, query, limit, target, overwrite, full)
+    result = _shown(await client.query_all(query, limit) if fetch_all else await client.query(query), full)
     if target is None:
         return result
     return await _write_output(target, json.dumps(result).encode("utf-8"), overwrite)
@@ -367,7 +398,7 @@ async def qbo_query(query: str, fetch_all: bool = False, limit: int = 1000, outp
 
 @mcp.tool(annotations=READ_ONLY)
 @_tag_errors
-async def qbo_cdc(entities: list[str], changed_since: str) -> list[dict[str, Any]]:
+async def qbo_cdc(entities: list[str], changed_since: str, full: bool = False) -> list[dict[str, Any]]:
     """Change data capture: every record of the given entities created, changed or deleted since a time.
 
     QuickBooks looks back at most 30 days and returns at most 1000 records per entity. Deleted records come back
@@ -377,11 +408,13 @@ async def qbo_cdc(entities: list[str], changed_since: str) -> list[dict[str, Any
     Args:
         entities: Entity names, e.g. ["Invoice", "Payment"].
         changed_since: ISO 8601 timestamp, e.g. "2026-09-01T00:00:00-07:00".
+        full: Keep attachments' presigned download URLs (TempDownloadUri), left out by default: they are
+            temporary credentials, kilobytes long each, and qbo_download_attachment does not need them.
     """
     names = [get_entity(e).name for e in entities]
     if not names:
         raise ToolError("invalid: name at least one entity")
-    return await _get_runtime().client.cdc(names, changed_since)
+    return _shown(await _get_runtime().client.cdc(names, changed_since), full)
 
 
 @mcp.tool(annotations=READ_ONLY)
@@ -475,7 +508,7 @@ async def qbo_download_attachment(attachable_id: str, output_path: str, overwrit
 
 @mcp.tool(annotations=ADDITIVE)
 @_tag_errors
-async def qbo_create(entity: str, data: dict[str, Any], dry_run: bool = False) -> dict[str, Any]:
+async def qbo_create(entity: str, data: dict[str, Any], dry_run: bool = False, full: bool = False) -> dict[str, Any]:
     """Create a record: a customer, vendor, account, item, invoice, bill, payment, journal entry, and so on.
 
     `data` is the QuickBooks JSON for the entity without Id/SyncToken, e.g. for a JournalEntry:
@@ -487,28 +520,35 @@ async def qbo_create(entity: str, data: dict[str, Any], dry_run: bool = False) -
         entity: Entity name.
         data: The record's fields.
         dry_run: Validate locally and return what would be sent, without sending it.
+        full: Keep attachments' presigned download URLs (TempDownloadUri), left out by default: they are
+            temporary credentials, kilobytes long each, and qbo_download_attachment does not need them.
     """
     rt = _get_runtime()
     spec = require_capability(get_entity(entity), "create")
     if dry_run:
         return {"dry_run": True, "operation": "create", "entity": spec.name, "data": data}
-    return await _perform(rt, "create", spec.name, data, lambda rid: rt.client.create(spec, data, rid))
+    return _shown(await _perform(rt, "create", spec.name, data, lambda rid: rt.client.create(spec, data, rid)), full)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
 @_tag_errors
-async def qbo_update(entity: str, data: dict[str, Any], sparse: bool = True, dry_run: bool = False) -> dict[str, Any]:
+async def qbo_update(entity: str, data: dict[str, Any], sparse: bool = True, dry_run: bool = False,
+                     full: bool = False) -> dict[str, Any]:
     """Update a record. `data` must carry the record's Id and its current SyncToken.
 
     With sparse=True (default) only the fields in `data` change. With sparse=False the record is replaced: every
     writable field missing from `data` is cleared. Lists such as Line are always replaced whole, so send the
     complete list when changing lines. A stale SyncToken is rejected by QuickBooks (someone changed the record).
+    Fields QuickBooks demands even in a sparse update (a Bill's VendorRef, a Class's Name, ...) are copied from
+    the current record when `data` lacks them.
 
     Args:
         entity: Entity name.
         data: Fields to change plus Id and SyncToken.
         sparse: Partial update (True) or full replacement (False).
         dry_run: Fetch the current record and return a field-by-field diff instead of updating.
+        full: Keep attachments' presigned download URLs (TempDownloadUri), left out by default: they are
+            temporary credentials, kilobytes long each, and qbo_download_attachment does not need them.
     """
     rt = _get_runtime()
     spec = require_capability(get_entity(entity), "update")
@@ -519,7 +559,8 @@ async def qbo_update(entity: str, data: dict[str, Any], sparse: bool = True, dry
                    "sync_token_matches": str(current.get("SyncToken")) == str(data.get("SyncToken"))}
         preview.update(_diff(current, data, sparse))
         return preview
-    return await _perform(rt, "update", spec.name, data, lambda rid: rt.client.update(spec, data, sparse, rid))
+    return _shown(await _perform(rt, "update", spec.name, data, lambda rid: rt.client.update(spec, data, sparse, rid)),
+                  full)
 
 
 @mcp.tool(annotations=DESTRUCTIVE)
@@ -586,7 +627,8 @@ async def qbo_send(entity: str, id: str, send_to: str | None = None) -> dict[str
 
 @mcp.tool(annotations=DESTRUCTIVE)
 @_tag_errors
-async def qbo_batch(operations: list[dict[str, Any]], dry_run: bool = False) -> list[dict[str, Any]]:
+async def qbo_batch(operations: list[dict[str, Any]], dry_run: bool = False,
+                    full: bool = False) -> list[dict[str, Any]]:
     """Run up to 30 creates, updates, deletes and queries in one request. Each operation succeeds or fails alone.
 
     Each operation is one of:
@@ -599,11 +641,13 @@ async def qbo_batch(operations: list[dict[str, Any]], dry_run: bool = False) -> 
     Args:
         operations: The operations.
         dry_run: Validate locally and return the batch request without sending it.
+        full: Keep attachments' presigned download URLs (TempDownloadUri), left out by default: they are
+            temporary credentials, kilobytes long each, and qbo_download_attachment does not need them.
     """
     rt = _get_runtime()
     if len(operations) > BATCH_LIMIT:
         raise ToolError("invalid: at most %d operations per batch, got %d" % (BATCH_LIMIT, len(operations)))
-    items, writes = [], False
+    items, writes, sparse_updates = [], False, []
     for index, op in enumerate(operations, 1):
         bid = str(index)
         if "query" in op:
@@ -619,12 +663,16 @@ async def qbo_batch(operations: list[dict[str, Any]], dry_run: bool = False) -> 
             raise ToolError("invalid: operation %d: %s needs Id and SyncToken in data" % (index, kind))
         if kind == "update" and op.get("sparse", True):
             data["sparse"] = True
+            sparse_updates.append((spec, data))
         items.append({"bId": bid, "operation": kind, spec.name: data})
         writes = True
     if dry_run:
         return [dict(item, dry_run=True) for item in items]
 
     async def call(rid):
+        # Filled here, past the read-only check, so the audit log records the request as sent.
+        for spec, data in sparse_updates:
+            data.update(await rt.client.sparse_fill(spec, data))
         responses = await rt.client.batch(items, rid)
         results = []
         for response in responses:
@@ -639,14 +687,14 @@ async def qbo_batch(operations: list[dict[str, Any]], dry_run: bool = False) -> 
         return sorted(results, key=lambda r: int(r["bId"]) if str(r["bId"]).isdigit() else 0)
 
     if not writes:
-        return await call(QboClient.new_request_id())
-    return await _perform(rt, "batch", None, items, call)
+        return _shown(await call(QboClient.new_request_id()), full)
+    return _shown(await _perform(rt, "batch", None, items, call), full)
 
 
 @mcp.tool(annotations=ADDITIVE)
 @_tag_errors
 async def qbo_upload_attachment(file_path: str, attach_to: list[dict[str, str]] | None = None,
-                                note: str | None = None) -> dict[str, Any]:
+                                note: str | None = None, full: bool = False) -> dict[str, Any]:
     """Upload a local file (receipt, statement, contract; up to 100 MB) as an attachment.
 
     Args:
@@ -655,6 +703,8 @@ async def qbo_upload_attachment(file_path: str, attach_to: list[dict[str, str]] 
             Linking changes each linked record's SyncToken; re-read a record before updating, voiding or
             deleting it afterwards.
         note: Optional note stored with the attachment.
+        full: Keep the attachment's presigned download URL (TempDownloadUri), left out by default: it is a
+            temporary credential, kilobytes long, and qbo_download_attachment does not need it.
     """
     rt = _get_runtime()
     path = _require_absolute(file_path, "file_path")
@@ -681,7 +731,7 @@ async def qbo_upload_attachment(file_path: str, attach_to: list[dict[str, str]] 
         content = await anyio.Path(path).read_bytes()
         return await rt.client.upload(path.name, content, content_type, metadata, rid)
 
-    return await _perform(rt, "upload", "Attachable", request, call)
+    return _shown(await _perform(rt, "upload", "Attachable", request, call), full)
 
 
 def _watch_parent():
