@@ -25,7 +25,7 @@ use_plugin("copy_resources")
 use_plugin("python.distutils")
 
 name = "karellen-qbo-mcp"
-version = "0.0.4.dev"
+version = "0.0.4"
 
 summary = "MCP Server for QuickBooks Online"
 authors = [Author("Karellen, Inc.", "supervisor@karellen.co")]
