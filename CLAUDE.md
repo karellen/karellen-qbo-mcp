@@ -67,4 +67,4 @@ When changing tool semantics, MCP server behavior, or environment variable handl
 
 ## CI
 
-GitHub Actions (`.github/workflows/build.yml`): matrix build on ubuntu-latest across Python 3.10-3.14. Deploy (PyPI upload) from Python 3.14 on push to master. Uses `pybuilder/build@master` action. Commit messages containing `[release]` or `[release <version>]` trigger a release. Publishing a GitHub release runs `.github/workflows/notify-marketplace.yml`, which asks `karellen/claude-plugins` to update the plugin's marketplace version (needs the `PAT_TOKEN` secret; uploads need `PYPI_TOKEN`).
+GitHub Actions (`.github/workflows/build.yml`): matrix build on ubuntu-latest across Python 3.11-3.15. Deploy (PyPI upload) from Python 3.14 on push to master. Uses `pybuilder/build@master` action. Commit messages containing `[release]` or `[release <version>]` trigger a release. Publishing a GitHub release runs `.github/workflows/notify-marketplace.yml`, which asks `karellen/claude-plugins` to update the plugin's marketplace version (needs the `PAT_TOKEN` secret; uploads need `PYPI_TOKEN`).

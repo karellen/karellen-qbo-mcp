@@ -52,7 +52,7 @@ your machine, and the only services it talks to are Intuit's.
 
 ## Requirements
 
-- **Python** >= 3.10
+- **Python** >= 3.11
 - An **Intuit Developer** account and an app with the `com.intuit.quickbooks.accounting`
   scope (free; see below)
 - A QuickBooks Online company: a sandbox company for development, your real company for
